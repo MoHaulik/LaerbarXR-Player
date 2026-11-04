@@ -1,0 +1,2362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>LærbarXR Quest Player</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+
+  <!-- ============================================================
+       Biblioteker ligger i vendor/, så Player ikke henter noget fra
+       tredjepart. Den virker uden internet og kan ikke gå i stykker pga.
+       et CDN.
+
+       three.js indlæses som klassisk script (UMD), ikke som ES-modul med
+       importmap. Quest 3 kunne godt køre importmaps, men det klassiske
+       script virker og kræver ingen opsætning.
+
+         vendor/three.min.js   three.js r150 (MIT) — build/three.min.js
+         vendor/jszip.min.js   JSZip 3.10.1 (MIT/GPLv3)
+       ============================================================ -->
+  <script src="vendor/jszip.min.js"></script>
+  <script src="vendor/three.min.js"></script>
+
+  <style>
+    :root {
+      --primary: #0969da;
+      --primary-hover: #0855b3;
+      --bg: #f3f4f6;
+      --card-bg: rgba(255, 255, 255, 0.95);
+      --text: #1f2937;
+      --text-muted: #6b7280;
+    }
+    body { margin: 0; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); }
+    #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 9000; padding: 20px; box-sizing: border-box; background: radial-gradient(circle at center, #e5e7eb 0%, #9ca3af 100%); }
+    .card { background: var(--card-bg); border-radius: 20px; padding: 32px 40px; box-shadow: 0 20px 40px rgba(0,0,0,0.15); max-width: 440px; width: 100%; text-align: center; backdrop-filter: blur(10px); }
+    .logo-container { margin-bottom: 24px; }
+    h1 { margin: 0 0 8px 0; font-size: 28px; font-weight: 700; letter-spacing: -0.5px; }
+    p.subtitle { margin: 0 0 28px 0; color: var(--text-muted); font-size: 15px; }
+    #saved-results { margin-top: 18px; }
+    .saved-title { font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; }
+    .link-btn { background: none; border: none; color: var(--primary); font-size: 13px; font-weight: 600; cursor: pointer; padding: 4px 6px; text-decoration: underline; }
+    .link-btn.danger { color: #b91c1c; }
+    /* Headset/hold-panelet er lukket som standard; kun opsummeringsknappen
+       ses, når enheden først er sat op. */
+    .identity-section { text-align: left; margin-bottom: 20px; }
+    .identity-summary { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 12px; background: #f8fafc; color: var(--text); font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit; }
+    .identity-summary:hover { border-color: var(--primary); }
+    .identity-summary-action { font-size: 12px; font-weight: 600; color: var(--primary); text-decoration: underline; flex-shrink: 0; }
+    .identity-panel-open .identity-summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; border-bottom-color: transparent; }
+    .identity { text-align: left; border: 1px solid #cbd5e1; border-top: none; border-radius: 0 0 12px 12px; padding: 14px; }
+    .identity[hidden] { display: none; }
+    .identity label { display: block; font-size: 12px; font-weight: 600; color: var(--text-muted); margin: 0 0 4px 2px; }
+    .identity input { width: 100%; padding: 12px 14px; font-size: 15px; border: 1px solid #cbd5e1; border-radius: 10px; box-sizing: border-box; margin-bottom: 12px; background: #f8fafc; color: var(--text); }
+    .identity input:focus { outline: none; border-color: var(--primary); background: #fff; }
+    .identity input:last-child { margin-bottom: 0; }
+    /* Hurtigvalg af headset og hold, så eleven ikke skal skrive på et headset.
+       Tekstfelterne ligger nedenunder som reserve (eget navn, usædvanligt hold). */
+    .chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px 0; }
+    .chip { padding: 10px 16px; font-size: 14px; font-weight: 700; border: 1px solid #cbd5e1; border-radius: 20px; background: #f8fafc; color: var(--text); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    .chip:hover { border-color: var(--primary); }
+    .chip.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .identity-toggle { background: none; border: none; color: var(--primary); font-size: 12px; font-weight: 600; cursor: pointer; padding: 0 0 10px 0; text-decoration: underline; display: block; }
+    .identity input.hidden-input { display: none; }
+    .solo-modal { display: none; position: fixed; inset: 0; background: rgba(15,23,42,0.55); align-items: center; justify-content: center; z-index: 10500; padding: 20px; box-sizing: border-box; }
+    .solo-modal.show { display: flex; }
+    .solo-modal-card { background: #fff; border-radius: 18px; padding: 28px; max-width: 380px; width: 100%; text-align: center; box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
+    .solo-modal-card h3 { margin: 0 0 10px 0; font-size: 19px; }
+    .solo-modal-card p { margin: 0 0 22px 0; font-size: 14px; color: var(--text-muted); line-height: 1.5; }
+    .solo-modal-actions { display: flex; flex-direction: column; gap: 10px; }
+    .solo-modal-actions button { padding: 14px; border-radius: 10px; font-size: 15px; font-weight: 700; cursor: pointer; border: none; }
+    #solo-start-confirm { background: var(--primary); color: #fff; }
+    #solo-start-cancel { background: #f1f5f9; color: var(--text); }
+    .file-drop-area { position: relative; display: flex; flex-direction: column; align-items: center; padding: 32px 20px; border: 2px dashed #cbd5e1; border-radius: 16px; background: #f8fafc; cursor: pointer; transition: all 0.2s; margin-bottom: 20px; }
+    .file-drop-area:hover { border-color: var(--primary); background: #f0f7ff; }
+    .file-drop-area span { font-size: 16px; font-weight: 600; color: var(--primary); }
+    .file-drop-area small { color: var(--text-muted); margin-top: 8px; }
+    #file-input { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+    #session-info { font-size: 16px; color: #059669; margin-bottom: 24px; font-weight: 600; min-height: 24px; background: #ecfdf5; padding: 12px; border-radius: 8px; display: none; }
+    #session-info.show { display: block; }
+    #start-button { padding: 16px 32px; font-size: 18px; background: var(--primary); color: white; border: none; border-radius: 12px; box-shadow: 0 4px 12px rgba(9, 105, 218, 0.3); cursor: pointer; transition: all 0.2s; font-weight: 600; width: 100%; }
+    #start-button:hover:not(:disabled) { transform: translateY(-2px); background: var(--primary-hover); box-shadow: 0 6px 16px rgba(9, 105, 218, 0.4); }
+    #start-button:disabled { background: #e2e8f0; color: #94a3b8; cursor: not-allowed; box-shadow: none; }
+    #preview-button { margin-top: 10px; padding: 12px 24px; font-size: 15px; background: transparent; color: var(--primary); border: 1px solid #cbd5e1; border-radius: 12px; cursor: pointer; font-weight: 600; width: 100%; transition: all 0.2s; }
+    #preview-button:hover:not(:disabled) { border-color: var(--primary); background: #f0f7ff; }
+    #preview-button:disabled { color: #94a3b8; cursor: not-allowed; }
+    #status { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%); background: rgba(17, 24, 39, 0.9); color: white; padding: 14px 28px; border-radius: 30px; font-size: 15px; font-weight: 500; display: none; z-index: 9999; backdrop-filter: blur(4px); }
+    .exit-xr { position: fixed; top: 24px; right: 24px; background: rgba(255,255,255,0.9); color: #111; border: none; border-radius: 50%; width: 50px; height: 50px; display: none; align-items: center; justify-content: center; font-size: 28px; cursor: pointer; z-index: 9999; font-weight: 300; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+    .xr-active .exit-xr { display: flex; }
+    .xr-active #overlay { display: none; }
+    video { display: none; }
+  </style>
+</head>
+<body>
+  <!-- Lyd er slået TIL med vilje (speak). playsinline holder videoen inline på mobil. -->
+  <video id="video" playsinline crossorigin="anonymous"></video>
+
+  <div id="overlay">
+    <div class="card">
+      <div class="logo-container">
+        <h1>LærbarXR Player</h1>
+        <p class="subtitle">Immersive Gaze-Controlled Training</p>
+      </div>
+      <!-- Headsettets identitet. Uden den kan resultatfilen ikke knyttes til et
+           headset eller hold. Begge værdier gemmes på enheden.
+
+           Panelet er lukket som standard. Et headset nummereres og tildeles et
+           hold én gang; senere hentes værdierne fra localStorage. Panelet åbner
+           kun af sig selv, når enheden ikke har en identitet endnu, for Start
+           er slået fra indtil da. -->
+      <div class="identity-section">
+        <button type="button" class="identity-summary" id="identity-summary"
+                aria-expanded="false" aria-controls="identity-panel">
+          <span class="identity-summary-text" id="identity-summary-text">Headset ikke valgt</span>
+          <span class="identity-summary-action" id="identity-summary-action">Skift</span>
+        </button>
+        <div class="identity" id="identity-panel" hidden>
+          <label for="headset-id">Headset</label>
+          <div class="chip-row" id="headset-id-chips"></div>
+          <input type="text" id="headset-id" class="hidden-input" placeholder="f.eks. Headset 07" autocomplete="off">
+          <label for="headset-group">Hold</label>
+          <div class="chip-row" id="headset-group-chips"></div>
+          <input type="text" id="headset-group" class="hidden-input" placeholder="f.eks. Hold 1" autocomplete="off">
+          <button type="button" class="identity-toggle" id="identity-toggle-typing">✎ Type a different name instead</button>
+        </div>
+      </div>
+
+      <div class="file-drop-area">
+        <span>Vælg simulation</span>
+        <small>.zip or .lxr packages</small>
+        <input type="file" id="file-input" accept=".zip,.lxr">
+      </div>
+      <div id="session-info"></div>
+      <button id="start-button" disabled>Start</button>
+      <button id="preview-button" disabled>Run on this screen (no headset)</button>
+
+      <!-- Hent resultater igen, hvis den automatiske download ikke nåede frem. -->
+      <div id="saved-results"></div>
+    </div>
+  </div>
+
+  <button class="exit-xr" id="exit-xr" aria-label="Exit VR">×</button>
+  <div id="status"></div>
+
+  <!-- Vises, hvis der ikke er forbindelse til lærerens dashboard, når der
+       trykkes Start. Så kan eleven vente i stedet for at starte alene, fx hvis
+       lærerens computer ikke er klar endnu. -->
+  <div class="solo-modal" id="solo-start-modal">
+    <div class="solo-modal-card">
+      <h3>No teacher connection found</h3>
+      <p>This headset can't reach your class session right now, so it would start on its own instead of waiting for your teacher or hold. Continue alone anyway?</p>
+      <div class="solo-modal-actions">
+        <button id="solo-start-confirm">Start on my own</button>
+        <button id="solo-start-cancel">Wait and try again</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // THREE kommer fra vendor/three.min.js (klassisk script), se <head>.
+
+    // 3D
+    let camera, scene, renderer, xrSession = null;
+    let videoElement, videoTexture, videoMaterial, videoMesh, fallbackEnvironment;
+    let raycaster, reticle, clock;
+    let xrSupported = false;
+    let referenceSpaceType = 'local';
+    let flatPreview = false;   // kører på en almindelig skærm, uden headset
+
+    // Tilstand
+    let gazeTimer = 0;
+    let lastIntersectedChoice = null;
+    const GAZE_TIME_THRESHOLD = 2.0;  // standard; kan overskrives pr. simulation / scene
+    let currentDwell = GAZE_TIME_THRESHOLD;
+    // Svar kan først vælges kort tid efter de vises, og et blik der allerede
+    // hviler på et svar, skal væk og tilbage igen. Så kan headsettet aldrig
+    // svare for eleven.
+    const GAZE_ARM_DELAY = 0.7;
+    let choicesVisible = false;   // var der valgbare svar i sidste frame?
+    let armed = false;            // er forsinkelsen gået?
+    let armTimer = 0;             // tæller op til GAZE_ARM_DELAY, når svar vises
+    let preArmedChoice = null;    // svaret blikket hvilede på, da forsinkelsen udløb
+    const MAX_DT = 0.1;           // ingen enkelt frame må rykke tiden mere
+    let sessionData = null;
+    let assetCache = {};
+    let currentNode = null;
+    let nodeTimer = 0;            // scenens ur, går kun fremad
+    let lastVideoTime = 0;        // seneste currentTime fra klippet
+    let videoStalledFor = 0;      // sekunder klippet ikke er gået frem
+    const VIDEO_STALL_GRACE = 0.75; // → derefter overtager vægur
+    let videoReady = false;       // har scenens video vist første frame?
+    let videoFailed = false;      // fejlede videoen / timeout?
+    let videoLoadStart = 0;       // performance.now() ved start af indlæsning
+    const VIDEO_LOAD_TIMEOUT = 20;// sekunder før en video regnes for fejlet
+    let videoLoadTimer = null;    // separat timer, der erklærer et klip fejlet, hvis det aldrig bliver klar
+    let activeChoices = [];
+
+    // Players egne knapper (Afslut, Play) placeres i faste grader, ikke i
+    // forfatterens X/Y, så et skift af koordinatsystem aldrig flytter dem.
+    //
+    // Play-knappen (vises når autoplay er blokeret) har én fast plads over
+    // Afslut. Ved 88 pctY overlappede den Afslut, så den står nu der, hvor de to
+    // bokse netop går fri af hinanden:
+    //   playHalfDeg ≈ (0.9375/2) / (6.0 * PI/180)  ≈ 4.48°
+    //   exitHalfDeg ≈ (0.328125/2) / (5.5 * PI/180) ≈ 1.71°
+    // Er der ikke plads pga. svarene, bliver knappen mindre (playGateScale) i
+    // stedet for at flytte sig, ligesom spørgsmålsblokken gør over for Afslut.
+    //
+    // Afslut står på -32°: under det der placeres lige frem, men stadig i
+    // synsfeltet både i headset (≈ ±48° lodret) og i flad preview (70° FOV).
+    const EXIT_PITCH_DEG = -32;
+    const EXIT_RADIUS = 5.5;
+    const PLAY_GATE_PITCH_DEG = -15.5;  // svarer til gammel pctY 81 på samme bue
+    const PLAY_GATE_RADIUS = 6.0;
+    // Play-knappens halve højde i grader ved fuld størrelse: halvdelen af
+    // (512x200 @ scale 1.2) → 0.469 enheder ved radius 6.0.
+    const PLAY_GATE_HALF_DEG = 4.48;
+    // Afslut-knappens halve højde i grader (360x120 @ scale 0.7 → 0.328
+    // enheder ved radius 5.5).
+    const EXIT_HALF_DEG = 1.75;
+    // Mindste størrelse Play-knappen må få og stadig være nem at kigge på
+    // (Afslut er 3,5° høj og fungerer fint).
+    const PLAY_GATE_MIN_SCALE = 0.38;
+    // Luft mellem knappen og det over og under den.
+    const PLAY_GATE_MARGIN_DEG = 0.6;
+    // Laveste position: lige over Afslut.
+    const PLAY_GATE_BAND_LOW_DEG = EXIT_PITCH_DEG + EXIT_HALF_DEG + PLAY_GATE_MARGIN_DEG;
+    // ... og dermed det laveste en spørgsmålsblok må nå uden at klemme
+    // Play-knappen væk. Blokken krymper for at overholde det.
+    const ANSWER_BLOCK_FLOOR_DEG = PLAY_GATE_BAND_LOW_DEG
+      + 2 * PLAY_GATE_HALF_DEG * PLAY_GATE_MIN_SCALE
+      + PLAY_GATE_MARGIN_DEG;
+    // Begge knapper står på yaw 0. Den bredeste (Afslut, 10,3°) plus margen er,
+    // hvor langt til siden indhold skal være for aldrig at ramme dem.
+    const CHROME_HALF_YAW_DEG = 6.5;
+    // Hvor højt en spørgsmålsblok må løftes for at gå fri af knapperne; højere
+    // end det skal eleven bøje nakken.
+    const MAX_BLOCK_TOP_DEG = 45;
+    // ... og hvor meget den så må krympe, hvis det ikke er nok.
+    const MIN_BLOCK_FIT = 0.4;
+    // Hvor bredt hele svargitteret må være i grader: ±60° er en behagelig
+    // drejning siddende. 20 svar på én række ville kræve tre gange så meget.
+    const ANSWER_BAND_WIDTH_DEG = 120;
+    // Maks. bredde for ét svar, så 5 svar ikke breder sig over hele båndet.
+    const MAX_ANSWER_WIDTH_DEG = 42;
+    // "↻ Se igen" står på samme række som Afslut, til venstre for den (eller på
+    // dens plads, hvis Afslut er fjernet). Med begge knapper skal en
+    // spørgsmålsblok holde denne afstand fra midten i stedet for CHROME_HALF_YAW_DEG.
+    const REPLAY_YAW_DEG = -12;
+    const CHROME_WITH_REPLAY_HALF_YAW_DEG = 18.5;
+    let playGateScale = 1;
+    // Hvor langt ned scenens spørgsmålsblok når, i grader; null uden spørgsmål.
+    // Sættes af loadNode, læses af showPlayGate.
+    let answerBlockBottomDeg = null;
+
+    // === Koordinater ===
+    // Overlays, spørgsmål og svar angives i Builder som X/Y i procent. To
+    // måder at lægge dem på kuglen:
+    //
+    //   'legacy16x9'  X → yaw ±45°,  Y → pitch ±25°   (alt bygget før
+    //                 2026-09-25). Et fladt 16:9-vindue foran eleven.
+    //   'sphere360'   X → yaw ±180°, Y → pitch ±90°   (nu). Ækvirektangulær
+    //                 som selve 360-videoen: X 50 lige frem, X 0 / X 100 lige
+    //                 bagud, Y 0 lige op, Y 100 lige ned.
+    //
+    // Projektet gemmer sit system, så gamle simulationer vises som de blev
+    // bygget. Builder konverterer gamle projekter ved indlæsning.
+    const COORD_LEGACY = 'legacy16x9';
+    const COORD_SPHERE = 'sphere360';
+    function coordSpace() {
+      return (sessionData && sessionData.coordSpace === COORD_SPHERE) ? COORD_SPHERE : COORD_LEGACY;
+    }
+
+    // === Læsbar tekst ===
+    // Forfatterens "Size" er relativ. Ved 1.0 fyldte en 32px-tekst på en
+    // 512 bred boks ca. 1° i headsettet, hvilket var for lille. Faktorerne
+    // her skalerer hele intervallet, så 1.0 nu svarer til det gamle ~2.2, og
+    // Builders slider starter tilsvarende højere.
+    const TEXT_SIZE_GAIN = 2.2;    // tekst-overlays
+    const QUESTION_SIZE_GAIN = 1.5;  // spørgsmål + svar (større grundskrift)
+    const CHOICE_MIN_SCALE = 1.3;    // mindste endelige størrelse for et svar
+    let overlaysGroup = new THREE.Group();
+    let sessionEnding = false;    // endSession må kun køre én gang
+    let endTimer = null;          // ventende slutscene → endSession-timer
+    let sessionCompleteMesh = null;      // "Session Done"-kort i headsettet før xrSession.end()
+    let sessionCompleteTimer = null;     // holder kortet fremme lidt før nedlukning
+    let loadingPlane = null;      // "indlæser video" i headsettet
+    let isTransitioning = false;  // et sceneskift er i gang
+
+    // Begræns forfatterens kigge-tid til et fornuftigt interval; 0 ved ugyldig
+    // værdi, så kalderens `|| standard` slår igennem.
+    function clampDwell(v) {
+      const n = parseFloat(v);
+      if (!isFinite(n) || n <= 0) return 0;
+      return Math.max(0.5, Math.min(10, n));
+    }
+
+    // Genbrugte objekter (ingen allokering pr. frame)
+    const _gazeOrigin = new THREE.Vector3();
+    const _gazeDir = new THREE.Vector3();
+    const _gazeQuat = new THREE.Quaternion();
+
+    // Analyse
+    let sessionLog = [];
+    let sessionStartTime = 0;
+    // Første svar pr. spørgsmål i dette gennemløb, [{n: nodeId, c: 1|0, a: [svarindeks]}].
+    // Sendes med hvert heartbeat, så Dashboardet kan vise "8/12 svarede rigtigt"
+    // mens klassen spiller.
+    let liveAnswers = [];
+    // Hvorfor gennemløbet sluttede: completed | exit | instructor | inactive.
+    // 'inactive' markeres excluded, så Dashboardet holder det ude af statistikken.
+    let endReason = 'completed';
+
+    // === Inaktivitet (ingen hovedbevægelse) ===
+    // Et headset der lægges fra sig midt i et gennemløb (let, når Afslut er
+    // fjernet), ville ellers blive stående og tælle som en elev, der ikke svarede.
+    // Har simulationen idleTimeoutSec, afsluttes gennemløbet efter så lang tid
+    // uden bevægelse og markeres excluded. Kun i headset; flad preview har intet hoved.
+    const IDLE_ROT_RAD = 1.5 * Math.PI / 180;  // et headset på hovedet bevæger sig langt mere
+    const IDLE_POS_M = 0.03;                    // ... et der ligger på bordet, langt mindre
+    let runActive = false;        // fra første scene indlæses til gennemløbet slutter
+    // Date.now(), ikke performance.now(): det monotone ur går måske ikke, mens
+    // et headset der er taget af, sover, og det er netop den pause, der tæller.
+    let lastMoveAt = 0;           // Date.now() for seneste hovedbevægelse
+    let idleRefSet = false;
+    let idleCheckTimer = null;
+    const _idleQuat = new THREE.Quaternion();
+    const _idlePos = new THREE.Vector3();
+    const _idleQuatNow = new THREE.Quaternion();
+    const _idlePosNow = new THREE.Vector3();
+    function idleTimeoutSec() {
+      const v = parseFloat(sessionData && sessionData.idleTimeoutSec);
+      return (isFinite(v) && v > 0) ? Math.max(15, Math.min(3600, v)) : 0;
+    }
+    function resetIdle() { lastMoveAt = Date.now(); idleRefSet = false; }
+    function trackMovement() {
+      if (!xrSession) return;
+      camera.getWorldQuaternion(_idleQuatNow);
+      camera.getWorldPosition(_idlePosNow);
+      if (!idleRefSet || _idleQuatNow.angleTo(_idleQuat) > IDLE_ROT_RAD || _idlePosNow.distanceTo(_idlePos) > IDLE_POS_M) {
+        _idleQuat.copy(_idleQuatNow); _idlePos.copy(_idlePosNow);
+        if (idleRefSet) lastMoveAt = Date.now();
+        idleRefSet = true;
+      }
+    }
+    // Kører fra render-loopet OG et interval: en Quest der er gået i dvale,
+    // laver ingen frames, og når den vågner, opdager intervallet pausen.
+    function checkIdle() {
+      const limit = idleTimeoutSec();
+      if (!limit || !runActive || !xrSession || flatPreview || previewEmbedMode || sessionEnding) return;
+      const idleSec = (Date.now() - lastMoveAt) / 1000;
+      if (idleSec < limit) return;
+      endReason = 'inactive';
+      sessionLog.push({
+        action: 'session_inactive', node_id: currentNode ? currentNode.id : '', node_title: currentNode ? currentNode.title : '',
+        idle_sec: Math.round(idleSec),
+        session_time_sec: +((performance.now() - sessionStartTime) / 1000).toFixed(2)
+      });
+      endSession(true);
+    }
+
+
+    // === Live-relay (valgfri) ===
+    // Headsets sender heartbeats og henter start-kommandoer fra relayet;
+    // Dashboardet henter position og resultater fra samme relay. Svarer
+    // /api/ping ikke, er relayAvailable false, og alt herunder gør ingenting.
+    // Player kører så alene og offline som før.
+    //
+    // Peger på cloud-relayet (Cloudflare Worker), så det virker på skolens
+    // Wi-Fi, selvom enhederne ikke kan nå hinanden lokalt. Sæt til '' for at
+    // bruge en lokal relay.py.
+    const RELAY_BASE = 'https://laerbarxr-relay.haulik-mhk.workers.dev';
+    let relayAvailable = false;
+    let heartbeatTimer = null;
+    let commandPollTimer = null;
+    let lastAppliedCommandId = 0;
+    // === Hvilken klasse headsettet hører til ===
+    // To lokaler kan køre samme simulation samtidig. Et Start frigiver derfor
+    // kun et headset, der ALLEREDE venter, når det sendes (ældre Start ignoreres;
+    // kommer man for sent, venter man på næste Start). Derefter hører headsettet
+    // til det Dashboard, der sendte det (`origin`): kun dets Stop afslutter det,
+    // og heartbeats og resultater bærer origin, så kun det Dashboard tager dem.
+    // Kommandoer uden origin (ældre Dashboard) gælder alle.
+    // Tider sammenlignes på relayets ur (se checkRelay).
+    const START_CLOCK_TOLERANCE_SEC = 3;
+    let relayClockOffsetSec = 0;   // relayets tid minus enhedens tid
+    let waitingSinceRelaySec = 0;  // relayets tid, da headsettet begyndte at vente
+    let releasedByOrigin = '';     // origin for det Start, der frigav gennemløbet
+    let waitingForStart = false;
+    let waitingGateMesh = null;
+    let currentRunStatus = 'idle'; // idle | waiting | running | done
+
+    // Kører indlejret i Builders preview, ikke en rigtig klasse: ingen relay,
+    // ingen resultatfil og intet i localStorage. Sættes, når lxrPreviewLoad
+    // kommer; går kun tilbage ved genindlæsning (Builder genskaber iframen).
+    let previewEmbedMode = false;
+
+    async function checkRelay() {
+      try {
+        const r = await fetch(RELAY_BASE + '/api/ping', { cache: 'no-store' });
+        // Dette fetch kan være startet før lxrPreviewLoad kom. Uden denne
+        // kontrol kunne det slå relayAvailable til igen, lige når preview starter.
+        relayAvailable = previewEmbedMode ? false : !!(r && r.ok);
+        if (relayAvailable) {
+          const ping = await r.json().catch(() => null);
+          if (ping && isFinite(ping.time)) relayClockOffsetSec = ping.time - Date.now() / 1000;
+        }
+      } catch (e) { relayAvailable = false; }
+      return relayAvailable;
+    }
+
+    function sendHeartbeat() {
+      if (!relayAvailable || !sessionData) return;
+      const payload = {
+        headsetId: headsetId(),
+        deviceId: deviceId(),
+        group: headsetGroup(),
+        scenario: sessionData.title,
+        nodeId: currentNode ? currentNode.id : '',
+        nodeTitle: currentNode ? currentNode.title : '',
+        status: currentRunStatus,
+        origin: releasedByOrigin,
+        sessionTimeSec: sessionStartTime ? +((performance.now() - sessionStartTime) / 1000).toFixed(1) : 0,
+        answers: liveAnswers
+      };
+      fetch(RELAY_BASE + '/api/heartbeat', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).catch(() => {});
+      // Samme tick tjekker også, om læreren har afsluttet fra Dashboardet,
+      // fx når timen er slut, før alle er færdige.
+      pollStopCommand();
+    }
+
+    function startHeartbeatLoop() {
+      if (heartbeatTimer || !relayAvailable) return;
+      sendHeartbeat();
+      heartbeatTimer = setInterval(sendHeartbeat, 2500);
+    }
+
+    // Polles kun, mens waitingForStart er true. Når gennemløbet er i gang, ses
+    // der ikke på start-kommandoer, så et senere Start ikke forstyrrer.
+    function pollCommand() {
+      if (!relayAvailable || !waitingForStart || !sessionData) return;
+      const url = RELAY_BASE + '/api/command?headsetId=' + encodeURIComponent(headsetId()) +
+                  '&group=' + encodeURIComponent(headsetGroup()) +
+                  '&since=' + lastAppliedCommandId;
+      fetch(url).then(r => r.json()).then(data => {
+        // Gå headsettets nyeste kommandoer igennem: det nyeste Start siden
+        // headsettet begyndte at vente, vinder, medmindre samme Dashboard
+        // har sendt Stop bagefter.
+        let start = null;
+        relayCommands(data).forEach(cmd => {
+          if (cmd.id <= lastAppliedCommandId || !forThisScenario(cmd)) return;
+          if (cmd.action === 'start' &&
+              (typeof cmd.ts !== 'number' || cmd.ts >= waitingSinceRelaySec - START_CLOCK_TOLERANCE_SEC)) {
+            start = cmd;
+          } else if (cmd.action === 'stop' && start && sameClass(cmd.origin, start.origin)) {
+            start = null;
+          }
+        });
+        if (start && waitingForStart) {
+          lastAppliedCommandId = start.id;
+          releasedByOrigin = start.origin || '';
+          clearWaitingGate();
+        }
+      }).catch(() => {});
+    }
+
+    // Modstykket til pollCommand() under gennemløbet: kigger kun efter 'stop'.
+    // Deler lastAppliedCommandId med pollCommand(); et stop sendes altid efter
+    // det start, det hører til, så id'et er altid højere.
+    function pollStopCommand() {
+      if (!relayAvailable || !sessionData || currentRunStatus !== 'running') return;
+      const url = RELAY_BASE + '/api/command?headsetId=' + encodeURIComponent(headsetId()) +
+                  '&group=' + encodeURIComponent(headsetGroup()) +
+                  '&since=' + lastAppliedCommandId;
+      fetch(url).then(r => r.json()).then(data => {
+        // Et andet lokales Dashboard kan stoppe sine egne headsets, aldrig dette.
+        const stop = relayCommands(data).find(cmd =>
+          cmd.id > lastAppliedCommandId && cmd.action === 'stop' && forThisScenario(cmd) &&
+          sameClass(cmd.origin, releasedByOrigin));
+        if (stop && currentRunStatus === 'running') {
+          lastAppliedCommandId = stop.id;
+          forceEndSession();
+        }
+      }).catch(() => {});
+    }
+
+    // Nyere relays sender alle relevante kommandoer fra de sidste 15 min; ældre
+    // kun den seneste.
+    function relayCommands(data) {
+      if (data && Array.isArray(data.commands)) return data.commands;
+      return data && data.command ? [data.command] : [];
+    }
+    function forThisScenario(cmd) {
+      return !cmd.scenario || cmd.scenario === sessionData.title;
+    }
+    // Samme klasse, medmindre begge sider angiver hvert sit Dashboard.
+    function sameClass(a, b) {
+      return !a || !b || a === b;
+    }
+
+    // Læreren har afsluttet gennemløbet fra Dashboardet. Bruger samme vej som en
+    // normal afslutning (endSession() -> onSessionEnd(): resultatfil, lokal kopi
+    // og POST til relayet), så data ikke går tabt.
+    function forceEndSession() {
+      endReason = 'instructor';
+      if (currentNode) {
+        sessionLog.push({
+          action: 'session_stopped_by_instructor',
+          node_id: currentNode.id, node_title: currentNode.title,
+          session_time_sec: +((performance.now() - sessionStartTime) / 1000).toFixed(2)
+        });
+      }
+      updateStatus('The instructor ended the session — saving your progress…');
+      endSession();
+    }
+
+    function showWaitingGate() {
+      statusElement.textContent = 'Waiting for the instructor to start the session…';
+      statusElement.style.display = 'block';
+      statusElement.style.background = 'rgba(17, 24, 39, 0.9)';
+      if (!waitingGateMesh) {
+        waitingGateMesh = createTextPlane('Waiting for the instructor to start…', {
+          width: 640, height: 200, fontSize: 40, backgroundColor: 'rgba(9,15,25,0.85)',
+          textColor: 'white', fontWeight: '600'
+        });
+        positionMeshFromXY(waitingGateMesh, 50, 50, 5.5);
+        waitingGateMesh.name = 'waitingGate';
+        overlaysGroup.add(waitingGateMesh);
+      }
+    }
+
+    function hideWaitingGate() {
+      if (statusElement.textContent === 'Waiting for the instructor to start the session…') {
+        statusElement.style.display = 'none';
+      }
+      if (waitingGateMesh) {
+        overlaysGroup.remove(waitingGateMesh);
+        disposeNode(waitingGateMesh);
+        waitingGateMesh = null;
+      }
+    }
+
+    function clearWaitingGate() {
+      waitingForStart = false;
+      currentRunStatus = 'running';
+      if (commandPollTimer) { clearInterval(commandPollTimer); commandPollTimer = null; }
+      hideWaitingGate();
+      proceedToFirstNode();
+    }
+
+    // Viser et kort "Session Done"-kort i headsettet, før xrSession.end() trækker
+    // eleven ud af VR. Ellers føles afslutningen som et nedbrud. Lægges oven på
+    // det, slutscenen allerede viser.
+    const SESSION_COMPLETE_HOLD_MS = 2200;
+
+    function showSessionCompleteMessage() {
+      statusElement.textContent = 'Session done — results saved.';
+      statusElement.style.display = 'block';
+      statusElement.style.background = 'rgba(17, 24, 39, 0.9)';
+      if (!sessionCompleteMesh) {
+        sessionCompleteMesh = createTextPlane('Session Done ✓ — thanks, you can take off the headset now.', {
+          width: 640, height: 220, fontSize: 38, backgroundColor: 'rgba(10,60,35,0.9)',
+          textColor: 'white', fontWeight: '600'
+        });
+        positionMeshFromXY(sessionCompleteMesh, 50, 50, 5.5);
+        sessionCompleteMesh.name = 'sessionComplete';
+        overlaysGroup.add(sessionCompleteMesh);
+      }
+    }
+
+    // Den del af beginScenario(), der indlæser første scene. Skilt ud, så en
+    // kørsel med relay kan vente bag venteskærmen, mens offline kaldes direkte.
+    function proceedToFirstNode() {
+      currentNode = sessionData.nodes.find(n => n.id === sessionData.startNode);
+      // Inaktivitet tæller først, når eleven er i gang. Headsets der ligger og
+      // venter på Start, er fine.
+      runActive = true;
+      resetIdle();
+      if (!idleCheckTimer) idleCheckTimer = setInterval(checkIdle, 1000);
+      if (currentNode) {
+        loadNode(currentNode);
+        // Er startscenen selv en slutscene, skal den afsluttes som i selectChoice().
+        // Slutscener har ingen Afslut-knap, så eleven ville ellers sidde fast.
+        if (currentNode.type === 'end') {
+          const secs = parseFloat(currentNode.duration);
+          scheduleEndSession((secs > 0 ? secs : 3) * 1000);
+        }
+      } else {
+        // Startscene der ikke findes: afslut pænt i stedet for et sort headset.
+        updateStatus('Error: Start node not found.', true);
+        endSession();
+      }
+    }
+    const startButton = document.getElementById('start-button');
+    const fileInput = document.getElementById('file-input');
+    const sessionInfo = document.getElementById('session-info');
+    const statusElement = document.getElementById('status');
+    const exitButton = document.getElementById('exit-xr');
+    const previewButton = document.getElementById('preview-button');
+    const headsetIdInput = document.getElementById('headset-id');
+    const headsetGroupInput = document.getElementById('headset-group');
+
+    // Headsettets identitet, gemt på enheden.
+    function loadIdentity() {
+      try {
+        headsetIdInput.value    = localStorage.getItem('lxr_headset_id')    || '';
+        headsetGroupInput.value = localStorage.getItem('lxr_headset_group') || '';
+      } catch (e) { /* privat tilstand: identiteten gemmes ikke */ }
+    }
+    function saveIdentity() {
+      try {
+        localStorage.setItem('lxr_headset_id', headsetIdInput.value.trim());
+        localStorage.setItem('lxr_headset_group', headsetGroupInput.value.trim());
+      } catch (e) {}
+    }
+    function headsetId()    { return headsetIdInput.value.trim() || 'Unnamed headset'; }
+    function headsetGroup() { return headsetGroupInput.value.trim() || 'Hold 1'; }
+
+    // Hurtigvalg af nummer og hold. Et headset har intet tastatur, og et
+    // skærmtastatur med blik/controller er langsomt. Knapperne udfylder det
+    // samme felt som tastaturet, så resten af koden er uændret. Tekstfelterne
+    // er skjult som reserve.
+    const headsetIdChips = document.getElementById('headset-id-chips');
+    const headsetGroupChips = document.getElementById('headset-group-chips');
+    const identityToggleBtn = document.getElementById('identity-toggle-typing');
+
+    function makeChip(displayLabel, valueToSet, input, row) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'chip';
+      chip.textContent = displayLabel;
+      chip.dataset.value = valueToSet;
+      chip.addEventListener('click', function () {
+        input.value = valueToSet;
+        saveIdentity();
+        updateStartEnabled();
+        refreshChipActiveStates();
+      });
+      row.appendChild(chip);
+    }
+
+    function renderIdentityChips() {
+      headsetIdChips.innerHTML = '';
+      headsetGroupChips.innerHTML = '';
+      for (let n = 1; n <= 20; n++) {
+        const padded = n < 10 ? '0' + n : String(n);
+        makeChip(padded, 'Headset ' + padded, headsetIdInput, headsetIdChips);
+      }
+      for (let g = 1; g <= 6; g++) {
+        makeChip('Hold ' + g, 'Hold ' + g, headsetGroupInput, headsetGroupChips);
+      }
+      refreshChipActiveStates();
+    }
+
+    function refreshChipActiveStates() {
+      const idVal = headsetIdInput.value.trim();
+      const groupVal = headsetGroupInput.value.trim();
+      Array.from(headsetIdChips.children).forEach(function (c) {
+        c.classList.toggle('active', c.dataset.value === idVal);
+      });
+      Array.from(headsetGroupChips.children).forEach(function (c) {
+        c.classList.toggle('active', c.dataset.value === groupVal);
+      });
+      refreshIdentitySummary();
+    }
+
+    // === Lukket headset/hold-panel ===
+    // Et headset nummereres og tildeles et hold ÉN gang. loadIdentity() har
+    // allerede hentet begge fra localStorage, så normalt forbliver panelet
+    // lukket og viser kun opsummeringen. Kun en enhed uden nummer åbner
+    // panelet selv, da Start er slået fra uden.
+    const identitySection = document.querySelector('.identity-section');
+    const identityPanel = document.getElementById('identity-panel');
+    const identitySummaryBtn = document.getElementById('identity-summary');
+    const identitySummaryText = document.getElementById('identity-summary-text');
+    const identitySummaryAction = document.getElementById('identity-summary-action');
+
+    function refreshIdentitySummary() {
+      if (!identitySummaryText) return;
+      const idVal = headsetIdInput.value.trim();
+      const groupVal = headsetGroupInput.value.trim();
+      identitySummaryText.textContent = idVal
+        ? idVal + ' · ' + (groupVal || 'Hold 1')
+        : 'Headset ikke valgt';
+      if (identitySummaryAction) {
+        identitySummaryAction.textContent = identityPanelOpen ? 'Luk' : (idVal ? 'Skift' : 'Vælg');
+      }
+    }
+
+    let identityPanelOpen = false;
+    function setIdentityPanelOpen(open) {
+      identityPanelOpen = !!open;
+      if (identityPanel) identityPanel.hidden = !identityPanelOpen;
+      if (identitySection) identitySection.classList.toggle('identity-panel-open', identityPanelOpen);
+      if (identitySummaryBtn) identitySummaryBtn.setAttribute('aria-expanded', identityPanelOpen ? 'true' : 'false');
+      refreshIdentitySummary();
+    }
+
+    function initIdentityDisclosure() {
+      if (identitySummaryBtn) {
+        identitySummaryBtn.addEventListener('click', function () { setIdentityPanelOpen(!identityPanelOpen); });
+      }
+      setIdentityPanelOpen(!headsetIdInput.value.trim());
+    }
+
+    // Fri tekst til navne/hold der ikke er et tal (fx en kollega der tester).
+    // Knapperne er standard; dette er reserven.
+    let identityTypingMode = false;
+    function toggleIdentityTypingMode() {
+      identityTypingMode = !identityTypingMode;
+      headsetIdInput.classList.toggle('hidden-input', !identityTypingMode);
+      headsetGroupInput.classList.toggle('hidden-input', !identityTypingMode);
+      headsetIdChips.style.display = identityTypingMode ? 'none' : 'flex';
+      headsetGroupChips.style.display = identityTypingMode ? 'none' : 'flex';
+      identityToggleBtn.textContent = identityTypingMode ? '✓ Use quick-pick buttons instead' : '✎ Type a different name instead';
+      // Står værdien fra en knap stadig i feltet (fx "Headset 03"), ville man
+      // skrive efter den. select() gør, at man erstatter den.
+      if (identityTypingMode) { headsetIdInput.focus(); headsetIdInput.select(); }
+    }
+    identityToggleBtn.addEventListener('click', toggleIdentityTypingMode);
+
+    // Fast id pr. enhed, gemt én gang og sat på resultatfilens navn, så to
+    // headsets uden navn ikke overskriver hinandens filer.
+    function deviceId() {
+      try {
+        let id = localStorage.getItem('lxr_device_id');
+        if (!id) { id = 'dev' + Math.random().toString(36).slice(2, 8); localStorage.setItem('lxr_device_id', id); }
+        return id;
+      } catch (e) { return 'dev' + Math.random().toString(36).slice(2, 8); }
+    }
+
+    // Start/Preview kræver både en simulation og et headsetnavn, så et
+    // gennemløb aldrig står som "Unnamed headset".
+    function updateStartEnabled() {
+      const named = headsetIdInput.value.trim().length > 0;
+      const loaded = !!sessionData;
+      startButton.disabled = !(loaded && named && xrSupported);
+      previewButton.disabled = !(loaded && named);
+      // Fjern også beskeden om at skrive et navn, når der er et, og vis
+      // "Ready: <titel>" som efter indlæsning.
+      if (loaded && !named) {
+        sessionInfo.textContent = 'Enter a headset name above to start';
+        sessionInfo.classList.add('show');
+      } else if (loaded && named) {
+        sessionInfo.textContent = `Ready: ${sessionData.title}`;
+        sessionInfo.classList.add('show');
+      }
+    }
+
+    function init() {
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x111111);
+
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100);
+      scene.add(camera);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      document.body.appendChild(renderer.domElement);
+
+      clock = new THREE.Clock();
+      raycaster = new THREE.Raycaster();
+
+      const envGeo = new THREE.SphereGeometry(20, 32, 32);
+      const envMat = new THREE.MeshBasicMaterial({ color: 0x1f2937, wireframe: true, transparent: true, opacity: 0.1 });
+      fallbackEnvironment = new THREE.Mesh(envGeo, envMat);
+      scene.add(fallbackEnvironment);
+
+      videoElement = document.getElementById('video');
+      videoTexture = new THREE.VideoTexture(videoElement);
+      videoTexture.minFilter = THREE.LinearFilter;
+      videoTexture.magFilter = THREE.LinearFilter;
+      videoTexture.format = THREE.RGBAFormat;
+      videoTexture.colorSpace = THREE.SRGBColorSpace; // 360-video ser ellers udvasket ud
+
+      const sphereGeometry360 = new THREE.SphereGeometry(15, 64, 32, 0, Math.PI * 2, 0, Math.PI);
+      sphereGeometry360.scale(-1, 1, 1);
+      videoMaterial = new THREE.MeshBasicMaterial({ map: videoTexture, side: THREE.FrontSide });
+      videoMesh = new THREE.Mesh(sphereGeometry360, videoMaterial);
+      videoMesh.visible = false;
+      scene.add(videoMesh);
+
+      scene.add(overlaysGroup);
+      setupGazeInteraction();
+
+      // WebXR-understøttelse
+      if (navigator.xr && navigator.xr.isSessionSupported) {
+        navigator.xr.isSessionSupported('immersive-vr').then(s => {
+          xrSupported = s;
+          if (!s) updateStatus('Immersive VR not supported on this device/browser', true);
+          updateStartEnabled();
+        }).catch(() => { xrSupported = false; });
+      } else {
+        xrSupported = false;
+        updateStatus('WebXR not available in this browser', true);
+      }
+
+      // Scenens tidslinje står på 0, til der er en rigtig første frame, så
+      // tidsstyrede overlays ikke vises over en sort kugle.
+      videoElement.addEventListener('loadeddata', () => { videoReady = true; clearVideoLoadTimer(); });
+      videoElement.addEventListener('playing',    () => { videoReady = true; clearVideoLoadTimer(); });
+      videoElement.addEventListener('error',      markVideoFailed);
+
+      buildLoadingPlane();
+
+      window.addEventListener('resize', onWindowResize);
+      startButton.addEventListener('click', function () { attemptStart(startXR); });
+      previewButton.addEventListener('click', function () { attemptStart(startFlatPreview); });
+      exitButton.addEventListener('click', endSession);
+      fileInput.addEventListener('change', handleFileSelect);
+
+      loadIdentity();
+      renderIdentityChips();
+      initIdentityDisclosure();
+      // Har enheden allerede en identitet, starter hurtigvalget i standardvisning.
+      headsetIdInput.addEventListener('change', function () { saveIdentity(); refreshChipActiveStates(); });
+      headsetGroupInput.addEventListener('change', function () { saveIdentity(); refreshChipActiveStates(); });
+      // Opdater Start mens der skrives, ikke kun ved blur.
+      headsetIdInput.addEventListener('input', function () { updateStartEnabled(); refreshChipActiveStates(); });
+      renderSavedResults();
+    }
+
+    // Lille plan fast foran kameraet, mens videoen buffer, så eleven ser
+    // "indlæser" i stedet for en sort kugle.
+    function buildLoadingPlane() {
+      loadingPlane = createTextPlane('Indlæser video…', {
+        width: 512, height: 128, fontSize: 40, backgroundColor: 'rgba(17,24,39,0.85)',
+        textColor: 'white', fontWeight: '600'
+      });
+      loadingPlane.position.set(0, 0, -2.5);
+      loadingPlane.visible = false;
+      camera.add(loadingPlane);
+    }
+
+    function showLoading(show) {
+      if (loadingPlane) loadingPlane.visible = show;
+    }
+
+    function setupGazeInteraction() {
+      const reticleGeo = new THREE.RingGeometry(0.015, 0.02, 32);
+      const reticleMat = new THREE.MeshBasicMaterial({ color: 0xffffff, opacity: 0.7, transparent: true, side: THREE.DoubleSide });
+      reticle = new THREE.Mesh(reticleGeo, reticleMat);
+
+      const gazeProgressGeo = new THREE.CircleGeometry(0.015, 32);
+      const gazeProgressMat = new THREE.MeshBasicMaterial({ color: 0x0969da, opacity: 0.9, transparent: true, side: THREE.DoubleSide });
+      const gazeProgress = new THREE.Mesh(gazeProgressGeo, gazeProgressMat);
+      gazeProgress.name = 'gazeProgress';
+      gazeProgress.scale.set(0, 0, 0);
+
+      reticle.add(gazeProgress);
+      reticle.position.z = -1;
+      camera.add(reticle);
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    // === Validering af upload ===
+    const MAX_ZIP_ENTRIES = 500;
+    const MAX_UNCOMPRESSED = 3 * 1024 * 1024 * 1024; // 3 GB i alt for alle filer
+
+    // Normaliser en sti i zip'en og tjek at den bliver inden for `prefix`.
+    // Afviser absolutte stier og "../". Returnerer stien eller null.
+    function withinFolder(path, prefix) {
+      if (typeof path !== 'string' || !path) return null;
+      const norm = path.replace(/\\/g, '/');
+      if (norm.charAt(0) === '/' || norm.indexOf('..') !== -1) return null;
+      return norm.indexOf(prefix) === 0 ? norm : null;
+    }
+
+    function validateScenarioZip(zip) {
+      const names = Object.keys(zip.files);
+      if (names.length > MAX_ZIP_ENTRIES) {
+        throw new Error('Simulationen indeholder for mange filer (' + names.length + ').');
+      }
+      let total = 0;
+      names.forEach(name => {
+        const entry = zip.files[name];
+        // _data.uncompressedSize udfyldes af JSZip ved læsning af indholdsfortegnelsen,
+        // så zip-bomber kan fanges uden at pakke noget ud.
+        const size = (entry && entry._data && entry._data.uncompressedSize) || 0;
+        total += size;
+        // Alle andre filer end manifestet skal ligge i videos/ eller images/.
+        if (name === 'project.json' || /\/$/.test(name)) return;
+        if (!withinFolder(name, 'videos/') && !withinFolder(name, 'images/')) {
+          throw new Error('Simulationen indeholder en uventet fil: ' + name);
+        }
+      });
+      if (total > MAX_UNCOMPRESSED) {
+        throw new Error('Simulationen er for stor, når den pakkes ud.');
+      }
+    }
+
+    function validateProject(data) {
+      if (!data || typeof data !== 'object') throw new Error('project.json is not an object.');
+      if (!Array.isArray(data.nodes) || !data.nodes.length) throw new Error('project.json has no nodes.');
+      if (!data.startNode) throw new Error('project.json has no start node.');
+    }
+
+    // Hent kun et medie, hvis stien i manifestet er sikker.
+    function safeAssetFile(zip, filePath, prefix) {
+      const safe = withinFolder(filePath, prefix);
+      return safe ? zip.file(safe) : null;
+    }
+
+    // === Indlæsning af data og filer ===
+    async function handleFileSelect(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      sessionInfo.textContent = 'Indlæser simulation…';
+      sessionInfo.classList.add('show');
+      startButton.disabled = true;
+      previewButton.disabled = true;
+      sessionData = null;
+
+      Object.keys(assetCache).forEach(url => URL.revokeObjectURL(assetCache[url]));
+      assetCache = {};
+
+      try {
+        const zip = await JSZip.loadAsync(file);
+        const projectFile = zip.file('project.json');
+
+        // Kun project.json accepteres. Det gamle format (`const flow = {…}` i
+        // index.html, kørt med new Function()) er fjernet: det var kørsel af
+        // vilkårlig kode fra en uploadet fil.
+        if (!projectFile) {
+          throw new Error('Ikke en LærbarXR-simulation — der er ingen project.json i .zip-filen.');
+        }
+
+        // Tjek strukturen før noget når DOM/dekoder: loft over antal filer og
+        // udpakket størrelse, og afvis stier uden for videos/ og images/.
+        validateScenarioZip(zip);
+
+        const projectData = await projectFile.async('string');
+        sessionData = JSON.parse(projectData);
+        validateProject(sessionData);
+
+        const assetPromises = [];
+        if (sessionData.assets && sessionData.assets.videos) {
+          sessionData.assets.videos.forEach(v => {
+            const f = safeAssetFile(zip, v.file, 'videos/');
+            if (f) assetPromises.push(f.async('blob').then(b => { const _ext = (v.file || '').toLowerCase(); const _mime = _ext.endsWith('.webm') ? 'video/webm' : 'video/mp4'; const _typed = (b.type === _mime) ? b : new Blob([b], { type: _mime }); assetCache[v.id] = URL.createObjectURL(_typed); }));
+          });
+        }
+        if (sessionData.assets && sessionData.assets.images) {
+          sessionData.assets.images.forEach(img => {
+            const f = safeAssetFile(zip, img.file, 'images/');
+            if (f) assetPromises.push(f.async('blob').then(b => { const _ext = (img.file || '').toLowerCase(); const _mime = _ext.endsWith('.png') ? 'image/png' : _ext.endsWith('.webp') ? 'image/webp' : _ext.endsWith('.gif') ? 'image/gif' : (_ext.endsWith('.jpg') || _ext.endsWith('.jpeg')) ? 'image/jpeg' : b.type; const _typed = (!_mime || b.type === _mime) ? b : new Blob([b], { type: _mime }); assetCache[img.id] = URL.createObjectURL(_typed); }));
+          });
+        }
+        await Promise.all(assetPromises);
+
+        if (!sessionData || !sessionData.nodes || !sessionData.startNode) {
+          throw new Error('Invalid project structure.');
+        }
+
+        sessionInfo.textContent = `Ready: ${sessionData.title}`;
+        updateStartEnabled();
+        updateStatus(xrSupported ? 'Simulation indlæst!' : 'Indlæst — kør den på denne skærm, eller åbn siden på et WebXR-headset', !xrSupported);
+        currentRunStatus = 'idle';
+        startHeartbeatLoop();
+      } catch (err) {
+        console.error('Failed to load:', err);
+        sessionInfo.textContent = 'Error parsing file.';
+        updateStatus(`Error: ${err.message}`, true);
+      }
+    }
+
+    // === Preview indlejret i Builder ===
+    // Builder viser denne side i en iframe og styrer den med postMessage, så
+    // preview er præcis samme renderer i flatPreview-tilstand.
+    window.addEventListener('message', function (e) {
+      // Kun Builder-siden, der indlejrer Player, må styre den.
+      if (window.parent === window || e.source !== window.parent) return;
+      const msg = e.data;
+      if (!msg || typeof msg !== 'object') return;
+
+      if (msg.type === 'lxrPreviewLoad') {
+        previewEmbedMode = true;
+        relayAvailable = false; // aldrig relay, mens den er indlejret
+        if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+        if (commandPollTimer) { clearInterval(commandPollTimer); commandPollTimer = null; }
+
+        // Frigives IKKE her, i modsætning til assetCache ved en .zip: blob-
+        // URL'erne tilhører Builder. En blob:-URL kan bruges af alle dokumenter
+        // med samme origin. En Blob sendt via postMessage gav i Chromium en
+        // <video>, der aldrig forlod readyState 0.
+        assetCache = {};
+        (msg.assets || []).forEach(a => { if (a && a.id && a.url) assetCache[a.id] = a.url; });
+
+        sessionData = msg.scenario;
+        if (!sessionData || !sessionData.nodes) return;
+
+        if (xrSession) { try { xrSession.end(); } catch (_) {} }
+        if (flatPreview) { flatPreview = false; renderer.setAnimationLoop(null); }
+        startFlatPreview();
+        return;
+      }
+
+      if (msg.type === 'lxrPreviewUpdateNode') {
+        // Forfatteren redigerer den viste scene: genindlæs den med den normale
+        // kode, så ændringer ses live uden at starte preview forfra.
+        if (!previewEmbedMode || !sessionData || !msg.node) return;
+        const idx = sessionData.nodes.findIndex(n => n.id === msg.node.id);
+        if (idx !== -1) sessionData.nodes[idx] = msg.node;
+        // currentNode er en separat reference. Al rigtig navigation sætter den
+        // før loadNode(), så det skal vi også her, ellers peger den på den gamle.
+        if (currentNode && currentNode.id === msg.node.id) { currentNode = msg.node; loadNode(msg.node); }
+        return;
+      }
+
+      if (msg.type === 'lxrPreviewGoto') {
+        // Restart / Back / Continue / hop til scene i Builder, eller preview
+        // åbnet på en bestemt scene.
+        if (!previewEmbedMode || !sessionData) return;
+        const node = sessionData.nodes.find(n => n.id === msg.nodeId);
+        if (!node) return;
+        currentNode = node;
+        loadNode(node);
+        if (node.type === 'end') {
+          const secs = parseFloat(node.duration);
+          scheduleEndSession((secs > 0 ? secs : 3) * 1000);
+        }
+      }
+    }, false);
+
+    // Tjek relayet igen lige før start, på den flade startskærm, så et headset
+    // der ellers ville køre alene, får en chance for at vente. confirm() virker
+    // ikke pålideligt inde i en VR-session, og lærerens computer kan være
+    // kommet online, siden siden blev indlæst.
+    const soloStartModal = document.getElementById('solo-start-modal');
+    async function attemptStart(launchFn) {
+      if (previewEmbedMode) { launchFn(); return; } // preview i Builder skal ikke bruge dette
+      const wasStartDisabled = startButton.disabled, wasPreviewDisabled = previewButton.disabled;
+      startButton.disabled = true; previewButton.disabled = true;
+      await checkRelay();
+      startButton.disabled = wasStartDisabled; previewButton.disabled = wasPreviewDisabled;
+      if (relayAvailable) { launchFn(); return; }
+      soloStartModal.classList.add('show');
+      document.getElementById('solo-start-confirm').onclick = function () {
+        soloStartModal.classList.remove('show');
+        launchFn();
+      };
+      document.getElementById('solo-start-cancel').onclick = function () {
+        soloStartModal.classList.remove('show');
+      };
+    }
+
+    // === VR-session ===
+    function startXR() {
+      if (!sessionData) return;
+      if (!xrSupported || !navigator.xr) { updateStatus('WebXR immersive-vr unavailable on this device', true); return; }
+      // 'local-floor' er valgfri, så det tildelte reference space kan være begge.
+      // Spørg rendereren efter det, vi faktisk fik.
+      navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor'] })
+        .then(session => {
+          const spaces = (session.enabledFeatures || []);
+          referenceSpaceType = spaces.indexOf('local-floor') !== -1 ? 'local-floor' : 'local';
+          onSessionStarted(session);
+        })
+        .catch(err => updateStatus(`Failed to start VR: ${err.message}`, true));
+    }
+
+    // Kører simulationen i et almindeligt browservindue uden headset: samme
+    // scener, tidslinje og kigge-tid; musen erstatter hovedet. Gør det muligt
+    // at afprøve en simulation uden et headset.
+    function startFlatPreview() {
+      if (!sessionData || flatPreview || xrSession) return;
+      flatPreview = true;
+      document.body.classList.add('xr-active');
+      camera.position.set(0, 0, 0);
+      camera.rotation.set(0, 0, 0);
+      flatYawDeg = 0; flatPitchDeg = 0; flatDragging = false;
+      renderer.domElement.addEventListener('pointerdown', onFlatPointerDown);
+      renderer.domElement.addEventListener('pointermove', onFlatPointerMove);
+      window.addEventListener('pointerup', onFlatPointerUp);
+      window.addEventListener('pointercancel', onFlatPointerUp);
+      renderer.setAnimationLoop(render);
+      updateStatus('Preview — træk med musen for at se dig omkring (hele vejen rundt), hold markøren på et svar for at vælge');
+      beginScenario();
+    }
+
+    // === Kig rundt i flad preview ===
+    // Træk for at kigge: yaw er ubegrænset, så man kan dreje hele vejen rundt,
+    // og pitch stopper lige før polerne (over ±90° vender billedet). Valg med
+    // blikket påvirkes ikke; det følger kameraets retning.
+    let flatYawDeg = 0, flatPitchDeg = 0;
+    let flatDragging = false, flatLastX = 0, flatLastY = 0;
+    const FLAT_DRAG_DEG_PER_PX = 0.22;
+
+    function onFlatPointerDown(e) {
+      if (!flatPreview) return;
+      flatDragging = true;
+      flatLastX = e.clientX; flatLastY = e.clientY;
+      if (renderer.domElement.setPointerCapture) {
+        try { renderer.domElement.setPointerCapture(e.pointerId); } catch (_) {}
+      }
+    }
+
+    function onFlatPointerUp() { flatDragging = false; }
+
+    function onFlatPointerMove(e) {
+      if (!flatPreview || !flatDragging) return;
+      // "Grib verden" som i en 360-viewer: træk til højre, og scenen glider til
+      // højre, dvs. du drejer til venstre.
+      flatYawDeg   += (e.clientX - flatLastX) * FLAT_DRAG_DEG_PER_PX;
+      flatPitchDeg += (e.clientY - flatLastY) * FLAT_DRAG_DEG_PER_PX;
+      flatPitchDeg = Math.max(-89, Math.min(89, flatPitchDeg));
+      flatLastX = e.clientX; flatLastY = e.clientY;
+      camera.rotation.order = 'YXZ';
+      camera.rotation.y = flatYawDeg * Math.PI / 180;
+      camera.rotation.x = flatPitchDeg * Math.PI / 180;
+    }
+
+    function onSessionStarted(session) {
+      xrSession = session;
+      document.body.classList.add('xr-active');
+      renderer.xr.setReferenceSpaceType(referenceSpaceType);
+      renderer.xr.setSession(session);
+      renderer.setAnimationLoop(render);
+      session.addEventListener('end', onSessionEnd);
+      beginScenario();
+    }
+
+    // Fælles for headset og flad preview.
+    function beginScenario() {
+      saveIdentity();
+      // Nulstil uret ved starten af HVERT gennemløb. THREE.Clock kører videre,
+      // mens frames er stoppet, så første frame i gennemløb nr. 2 ville ellers
+      // få hele pausen som ét dt. render() begrænser også dt til MAX_DT.
+      clock.start();
+      sessionEnding = false;
+      if (endTimer) { clearTimeout(endTimer); endTimer = null; }
+      showLoading(false);
+      // Skjul sidste frame fra forrige gennemløb, ellers ses den bag "Waiting
+      // for the instructor", indtil den nye scene er indlæst.
+      videoMesh.visible = false;
+      sessionStartTime = performance.now();
+      liveAnswers = [];
+      endReason = 'completed';
+      runActive = false;
+      sessionLog = [{
+        action: 'session_start',
+        title: sessionData.title,
+        headsetId: headsetId(),
+        group: headsetGroup(),
+        started_at: new Date().toISOString(),
+        session_time_sec: 0
+      }];
+
+      releasedByOrigin = '';
+      if (relayAvailable) {
+        waitingSinceRelaySec = Date.now() / 1000 + relayClockOffsetSec;
+        waitingForStart = true;
+        currentRunStatus = 'waiting';
+        sendHeartbeat();
+        showWaitingGate();
+        if (!commandPollTimer) commandPollTimer = setInterval(pollCommand, 1500);
+        pollCommand(); // hvis Start All kom, før headsettet var klar
+        return;
+      }
+      proceedToFirstNode();
+    }
+
+    function onSessionEnd() {
+      // Afsluttet af headsettet/browseren selv (systemknap, mistet session),
+      // ikke herfra. Det står i data i stedet for "completed".
+      if (!sessionEnding && endReason === 'completed') endReason = 'interrupted';
+      document.body.classList.remove('xr-active');
+      renderer.setAnimationLoop(null);
+      xrSession = null;
+      flatPreview = false;
+      runActive = false;
+      if (idleCheckTimer) { clearInterval(idleCheckTimer); idleCheckTimer = null; }
+      if (endTimer) { clearTimeout(endTimer); endTimer = null; }
+      if (sessionCompleteTimer) { clearTimeout(sessionCompleteTimer); sessionCompleteTimer = null; }
+      sessionCompleteMesh = null;
+      clearVideoLoadTimer();
+      showLoading(false);
+      renderer.domElement.removeEventListener('pointerdown', onFlatPointerDown);
+      renderer.domElement.removeEventListener('pointermove', onFlatPointerMove);
+      window.removeEventListener('pointerup', onFlatPointerUp);
+      window.removeEventListener('pointercancel', onFlatPointerUp);
+      flatDragging = false;
+      videoElement.pause();
+      videoElement.removeAttribute('src');
+      videoElement.load();
+      clearOverlays();
+
+      if (previewEmbedMode) {
+        // En prøvekørsel i Builder er ikke en klasse: ingen eval.json, intet i
+        // localStorage, intet til relayet. Sig bare til Builder, at den er slut.
+        try { parent.postMessage({ type: 'lxrPreviewEnded' }, '*'); } catch (_) {}
+        sessionLog = []; sessionStartTime = 0; currentNode = null;
+        return;
+      }
+
+      if (sessionLog.length > 1) {
+        const duration = +((performance.now() - sessionStartTime) / 1000).toFixed(2);
+        sessionLog.push({ action: 'session_end', duration_sec: duration, session_time_sec: duration, end_reason: endReason });
+
+        // Resultatfilen bærer headsettets identitet, så Dashboardet kan knytte
+        // gennemløbet til headset og hold. Nye navne er "hold" og "simulation";
+        // de gamle `group`/`scenario` skrives med, så relay og ældre Dashboards
+        // stadig virker. Dashboardet læser de nye navne først.
+        const results = {
+          headsetId: headsetId(),
+          deviceId: deviceId(),
+          hold: headsetGroup(),
+          simulation: sessionData.title,
+          group: headsetGroup(),        // gammelt navn, bruges af ældre Dashboards
+          scenario: sessionData.title,  // gammelt navn, bruges af ældre Dashboards
+          origin: releasedByOrigin,     // Dashboardet hvis Start frigav gennemløbet ('' = intet)
+          finished_at: new Date().toISOString(),
+          duration_sec: duration,
+          end_reason: endReason,
+          // Lagt fra sig uden bevægelse i idleTimeoutSec: gemmes, men tæller
+          // ikke med i Dashboardets statistik.
+          excluded: endReason === 'inactive',
+          events: sessionLog
+        };
+        currentRunStatus = 'done';
+        if (relayAvailable) {
+          // Send til relayet, så Dashboardet får resultatet med det samme uden
+          // manuel import. Download og lokal kopi ovenfor er uændret, så et
+          // headset uden relay/Wi-Fi stadig har sine data.
+          fetch(RELAY_BASE + '/api/results', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(results)
+          }).catch(() => {});
+        }
+        const json = JSON.stringify(results, null, 2);
+        const safe = s => String(s).replace(/[^a-z0-9]/gi, '_');
+        // Enheds-id i filnavnet, så to headsets uden navn får hver sin fil.
+        const fileName = `${safe(headsetId())}_${safe(sessionData.title)}_${deviceId()}_eval.json`;
+
+        // Gem resultatet på enheden FØR download. På et headset kan en download
+        // afvises stille eller havne et utilgængeligt sted; så kan data hentes her.
+        try {
+          const keep = JSON.parse(localStorage.getItem('lxr_results') || '[]');
+          keep.push({ fileName: fileName, savedAt: results.finished_at, results: results });
+          while (keep.length > 25) keep.shift();   // gem de seneste 25 gennemløb
+          localStorage.setItem('lxr_results', JSON.stringify(keep));
+        } catch (e) { /* fuld eller utilgængelig; download herunder er reserven */ }
+
+        try {
+          const blob = new Blob([json], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = fileName;
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 4000);
+          updateStatus('Results saved: ' + fileName);
+        } catch (err) {
+          updateStatus('Results kept on this device — use "Saved results" to retrieve them', true);
+        }
+        renderSavedResults();
+      }
+      sessionLog = []; sessionStartTime = 0; currentNode = null;
+    }
+
+    // === Afspilning af video med reserve ===
+    // Id for det aktuelle afspilningsforsøg, så et genforsøg fra én scene aldrig
+    // fyrer, efter der er skiftet til den næste.
+    let playAttemptToken = 0;
+
+    function playVideo(src) {
+      const token = ++playAttemptToken;
+      videoElement.src = src;
+      videoElement.loop = false;
+      videoMesh.visible = true;
+      tryPlay(token, true);
+    }
+
+    // play() i samme tick som .src sættes, afbrydes af selve indlæsningen og
+    // giver AbortError. Det er et kapløb, ikke en afvisning, så vent på data og
+    // prøv igen. Kun NotAllowedError (en rigtig autoplay-blokering, fx på et
+    // koldt startet headset) viser "▶ Play"-knappen.
+    function tryPlay(token, allowRetry) {
+      if (token !== playAttemptToken) return;   // en senere scene har overtaget
+      const p = videoElement.play();
+      if (!p || !p.catch) return;
+      p.catch(err => {
+        if (token !== playAttemptToken) return;
+        if (allowRetry && err && err.name === 'AbortError') {
+          // Afvisningen kommer asynkront, så elementet kan allerede have data, og
+          // 'canplay' kan være fyret. Tjek tilstanden først.
+          if (videoElement.readyState >= 2) { tryPlay(token, false); return; }
+          const onReady = function () {
+            videoElement.removeEventListener('canplay', onReady);
+            tryPlay(token, false);
+          };
+          videoElement.addEventListener('canplay', onReady);
+          return;
+        }
+        showPlayGate();
+      });
+    }
+
+    function showPlayGate() {
+      if (overlaysGroup.getObjectByName('playGate')) return;
+      updateStatus('Se på ▶ Play-knappen for at starte videoen', true);
+      const btn = createTextPlane('▶ Play', { width: 512, height: 200, fontSize: 72, backgroundColor: 'rgba(9,105,218,0.95)', textColor: 'white', fontWeight: '700', scale: 1.2 });
+      // Play-knappen står lavt i synsfeltet og nærmere end spørgsmålene, så den
+      // ikke dækker svarene og stjæler blikket.
+      //
+      // Den bruger båndet mellem bunden af scenens svar og toppen af Afslut og
+      // skaleres til at passe. Uden spørgsmål (det normale) har den fuld
+      // størrelse på PLAY_GATE_PITCH_DEG. Når svar når derned, rykker den ned
+      // under dem og bliver mindre.
+      const bandLow = PLAY_GATE_BAND_LOW_DEG;
+      const bandHigh = (answerBlockBottomDeg !== null ? answerBlockBottomDeg : 90) - PLAY_GATE_MARGIN_DEG;
+      const band = Math.max(0, bandHigh - bandLow);
+      playGateScale = Math.max(PLAY_GATE_MIN_SCALE, Math.min(1, band / (2 * PLAY_GATE_HALF_DEG)));
+      const halfDeg = PLAY_GATE_HALF_DEG * playGateScale;
+      // Brug den faste plads, medmindre der ikke er plads.
+      const gatePitch = Math.max(bandLow + halfDeg, Math.min(bandHigh - halfDeg, PLAY_GATE_PITCH_DEG));
+      positionMeshFromAngles(btn, 0, gatePitch, PLAY_GATE_RADIUS);
+      btn.scale.setScalar(playGateScale);
+      btn.name = 'playGate';
+      btn.userData = { isChoice: true, choiceData: { __retryPlay: true, label: 'play_gate' } };
+      overlaysGroup.add(btn);
+      activeChoices.push(btn);
+    }
+
+    function clearPlayGate() {
+      const gate = overlaysGroup.getObjectByName('playGate');
+      if (gate) { overlaysGroup.remove(gate); disposeNode(gate); activeChoices = activeChoices.filter(c => c !== gate); }
+    }
+
+    function clearVideoLoadTimer() {
+      if (videoLoadTimer) { clearTimeout(videoLoadTimer); videoLoadTimer = null; }
+    }
+
+    // Erklær scenens video for fejlet og fortsæt. Bruges af 'error', render-
+    // loopets timeout og den separate timer, så de opfører sig ens.
+    function markVideoFailed() {
+      clearVideoLoadTimer();
+      if (videoFailed || videoReady) return;
+      videoFailed = true;
+      showLoading(false);
+      updateStatus('Video kunne ikke indlæses — fortsætter', true);
+    }
+
+    // === Scener ===
+    async function loadNode(node) {
+      // session_time_sec (sekunder siden gennemløbet startede) er det, Dashboard
+      // og regneark skal bruge.
+      sessionLog.push({
+        action: 'node_start', node_id: node.id, title: node.title,
+        session_time_sec: +((performance.now() - sessionStartTime) / 1000).toFixed(2)
+      });
+      if (previewEmbedMode) { try { parent.postMessage({ type: 'lxrPreviewNode', nodeId: node.id }, '*'); } catch (_) {} }
+      clearOverlays();
+      nodeTimer = 0;
+      lastVideoTime = 0;
+      videoStalledFor = 0;
+      videoReady = false;
+      videoFailed = false;
+      videoLoadStart = performance.now();
+      clearVideoLoadTimer();       // fjern ventende timer fra forrige scene
+      isTransitioning = false;
+      // Nulstil forsinkelsen for svar til den nye scene.
+      choicesVisible = false; armed = false; armTimer = 0; preArmedChoice = null;
+      multiState = null;
+      // Kigge-tid: pr. scene → pr. simulation → 2,0 s.
+      currentDwell = clampDwell(node.gazeDwellSec) || clampDwell(sessionData.gazeDwellSec) || GAZE_TIME_THRESHOLD;
+
+      videoElement.pause();
+      videoMesh.visible = false;
+      // Startretning: hvilken del af 360°/180°-videoen eleven ser, når scenen
+      // starter. Videokuglen drejes (ikke kameraet, som WebXR ejer, eller
+      // overlays, som ligger i elevens rum), så det virker ens i headset,
+      // flad preview og Builder.
+      videoMesh.rotation.y = (parseFloat(node.videoYaw) || 0) * Math.PI / 180;
+      // I flad preview nulstilles visningen, så næste scene starter i sin
+      // startretning. I headsettet er elevens hoved kameraet.
+      if (flatPreview) {
+        flatYawDeg = 0; flatPitchDeg = 0;
+        camera.rotation.set(0, 0, 0);
+      }
+      showLoading(!!node.video);   // kun indlæsningsindikator for videoscener
+      if (node.video) {
+        let videoSrc = assetCache[node.video];
+        if (!videoSrc && sessionData.assets && sessionData.assets.videos) {
+          const videoAsset = sessionData.assets.videos.find(v => v.id === node.video);
+          if (videoAsset) videoSrc = assetCache[videoAsset.id] || assetCache[videoAsset.name];
+        }
+        if (videoSrc) {
+          playVideo(videoSrc);
+          // Fast timeout uafhængig af video-events og render-loopet. Nogle defekte
+          // klip fyrer aldrig 'error', og render-loopet tikker ikke i en baggrunds-
+          // fane. markVideoFailed() gør intet, hvis klippet blev klar først.
+          clearVideoLoadTimer();
+          videoLoadTimer = setTimeout(markVideoFailed, VIDEO_LOAD_TIMEOUT * 1000);
+        }
+        else { videoFailed = true; showLoading(false); }  // klippet mangler
+      }
+
+      if (node.imageOverlays) {
+        for (const io of node.imageOverlays) {
+          if (!io.imageId || !assetCache[io.imageId]) continue;
+          const mesh = await createImagePlane(assetCache[io.imageId], { scale: io.scale || 1 });
+          if (mesh) {
+            positionMeshFromXY(mesh, io.x, io.y, 7.5);
+            mesh.userData = { startTime: io.time || 0, endTime: (io.time || 0) + (io.duration || 5), isOverlay: true };
+            mesh.visible = false;
+            overlaysGroup.add(mesh);
+          }
+        }
+      }
+
+      if (node.textOverlays) {
+        for (const to of node.textOverlays) {
+          // Valgfri formatering; standard er det gamle udseende.
+          const textMesh = createTextPlane(to.text || '', {
+            backgroundColor: to.color || 'rgba(255, 255, 255, 0.95)',
+            textColor: to.textColor || 'black',
+            // Forfatterens værdi ganges op, så bunden af skalaen kan læses i et headset.
+            scale: (parseFloat(to.scale) || 1) * TEXT_SIZE_GAIN,
+            fontSize: to.fontSize ? parseFloat(to.fontSize) : 32,
+            fontWeight: to.fontWeight || 'normal',
+            align: to.align || 'center'
+          });
+          positionMeshFromXY(textMesh, to.x, to.y, 7);
+          textMesh.userData = { startTime: to.time || 0, endTime: (to.time || 0) + (to.duration || 3), isOverlay: true };
+          textMesh.visible = false;
+          overlaysGroup.add(textMesh);
+        }
+      }
+
+      // Nulstilles pr. scene og sættes, når svarblokken er lagt ud, så
+      // Play-knappen ved, hvad den skal holde sig fri af.
+      playGateScale = 1;
+      answerBlockBottomDeg = null;
+
+      // === Spørgsmål og svar ===
+      // Hver boks placeres for sig på kuglen med egen yaw/pitch og vender mod
+      // eleven. Så kan svarene stå i et gitter af vandrette rækker, layoutet
+      // regnes i grader ligesom afstanden til Afslut, og svarknapperne kan være
+      // større uden at ramme Afslut.
+      if (node.question || (node.choices && node.choices.length > 0)) {
+        const qGroup = new THREE.Group();   // kun til synlighed/levetid; bliver i origo
+        const Q_RADIUS = 6.5;
+        const GAP_DEG = 1.4;
+
+        const authoredScale = parseFloat(node.questionScale) || 1;
+        const blockScale = authoredScale * QUESTION_SIZE_GAIN;
+        const choices = (node.choices && node.choices.length > 0) ? node.choices : [];
+        const nChoices = choices.length;
+        // "Vælg alle rigtige" (flervalg): blikket krydser et svar af i stedet for
+        // at navigere, og Bekræft under svarene sender hele sættet. Se
+        // toggleMultiChoice / confirmMultiChoice.
+        const multi = isMultiNode(node);
+
+        // === Svargitter (op til 20 svar) ===
+        // Fire eller færre svar står lodret. Fra fem lægges de i et jævnt
+        // gitter, højst 4 kolonner op til 12 svar og 5 derover:
+        //
+        //   5→3+2   7→4+3   9→3×3   12→4×3   16→4×4   20→5×4
+        //
+        // Ingen scroll: valg sker med blikket, så en scrollknap ville konkurrere
+        // med svarene, og et svar man ikke har scrollet til, ved man ikke findes.
+        const GRID_MAX_COLS = nChoices <= 12 ? 4 : 5;
+        let gridRows, gridCols;
+        if (nChoices <= 4) { gridRows = nChoices; gridCols = 1; }
+        else {
+          gridRows = Math.ceil(nChoices / GRID_MAX_COLS);
+          gridCols = Math.ceil(nChoices / gridRows);   // jævnt, så ingen række er næsten tom
+        }
+
+        // Bredde pr. svar i grader. Hele blokken holdes inden for
+        // ANSWER_BAND_WIDTH_DEG, og en enkelt kolonne har sit eget loft.
+        const colWidthDeg = gridCols > 0
+          ? Math.min(MAX_ANSWER_WIDTH_DEG, (ANSWER_BAND_WIDTH_DEG - GAP_DEG * (gridCols - 1)) / gridCols)
+          : MAX_ANSWER_WIDTH_DEG;
+
+        const anchor = anglesFromXY(
+          node.questionX !== undefined ? node.questionX : 50,
+          node.questionY !== undefined ? node.questionY : 50
+        );
+        const yaw0 = anchor.yawDeg;
+
+        let qMesh = null;
+        if (node.question) {
+          // height:150 er et minimum; createTextPlane gør den højere efter behov.
+          qMesh = createTextPlane(node.question, {
+            width: 1024, height: 150,
+            fontSize: node.questionFontSize ? parseFloat(node.questionFontSize) : 50,
+            backgroundColor: 'rgba(17, 24, 39, 0.9)', textColor: 'white',
+            fontWeight: node.questionFontWeight || '700',
+            align: node.questionAlign || 'center',
+            scale: blockScale
+          });
+        }
+
+        // CHOICE_MIN_SCALE er et minimum for den ENDELIGE størrelse, så et svar
+        // aldrig bliver for lille at kigge på.
+        const gridScale = Math.max(CHOICE_MIN_SCALE, blockScale);
+        // createTextPlane er (logicWidth / 256) * scale bred, så logicWidth
+        // vælges, så hver knap er præcis colWidthDeg bred og kolonnerne flugter.
+        // Forfatterens Size påvirker teksten i knappen, ikke boksen (ved 1-4
+        // lodrette svar styrer den stadig hele boksen).
+        const colWorldWidth = colWidthDeg * Math.PI / 180 * Q_RADIUS;
+        // Tættere gitre får en lidt mindre skrift, så almindelige svar kan stå
+        // på en-to linjer. Fire linjer ville sprænge pladsen og krympe alt.
+        const baseChoiceFont = gridCols >= 5 ? 42 : (gridCols === 4 ? 46 : 50);
+
+        const choiceMeshes = choices.map(choice => {
+          const cAuthored = parseFloat(choice.scale) || 1;
+          const stacked = gridCols === 1;
+          // Minimummet fraviges kun, hvis forfatteren vælger under 1 (Builder
+          // tillader ned til 0,7).
+          const cScale = stacked
+            ? Math.max(CHOICE_MIN_SCALE * Math.min(1, cAuthored), cAuthored * blockScale)
+            : gridScale;
+          const logicWidth = stacked
+            ? 800
+            : Math.max(240, Math.round(colWorldWidth * 256 / cScale));
+          const authoredFont = choice.fontSize ? parseFloat(choice.fontSize) : baseChoiceFont;
+          const fontSize = stacked
+            ? (choice.fontSize ? parseFloat(choice.fontSize) : 50)
+            : authoredFont * Math.max(0.6, Math.min(1.6, cAuthored));
+          const cMesh = createTextPlane(choice.label, {
+            width: logicWidth,
+            height: stacked ? 180 : 200,   // minimum; createTextPlane gør den højere efter teksten
+            fontSize: fontSize,
+            backgroundColor: choice.bgColor || 'rgba(9, 105, 218, 0.95)',
+            textColor: choice.textColor || 'white',
+            fontWeight: choice.fontWeight || 'normal',
+            align: choice.align || 'center',
+            scale: cScale
+          });
+          cMesh.userData.isChoice = true;
+          cMesh.userData.choiceData = choice;
+          if (multi) { cMesh.userData.multiToggle = true; cMesh.userData.selected = false; }
+          return cMesh;
+        });
+
+        let confirmMesh = null;
+        if (multi) {
+          confirmMesh = createTextPlane(multiConfirmLabel(node, 0).text, {
+            width: 760, height: 175, fontSize: 46, backgroundColor: MULTI_DISABLED_BG,
+            textColor: 'white', fontWeight: '700', scale: gridScale
+          });
+          confirmMesh.userData.isChoice = true;
+          confirmMesh.userData.choiceData = { __confirm: true, label: 'confirm' };
+          confirmMesh.userData.disabled = true;
+          confirmMesh.name = 'multiConfirm';
+          multiState = { meshes: choiceMeshes, confirm: confirmMesh, done: false };
+        }
+
+        // Del svarene op i gitteret.
+        const rows = [];
+        for (let i = 0; i < choiceMeshes.length; i += gridCols) {
+          rows.push(choiceMeshes.slice(i, i + gridCols));
+        }
+        // Egen række under svarene, så pladsberegningen nedenfor tæller den med.
+        if (confirmMesh) rows.push([confirmMesh]);
+
+        // Læg blokken ud med en given krympefaktor, relativt til en topkant på 0:
+        // pitchOff er afstanden under toppen, yawOff afstanden til siden. Mellemrum
+        // skaleres med, så udstrækningen er proportional, og én division giver
+        // præcis pasform.
+        function layoutBlock(f) {
+          const gap = GAP_DEG * f;
+          const placements = [];
+          let topCursor = 0;
+          let halfWidth = 0;
+          if (qMesh) {
+            const h = degAtRadius(qMesh.userData.boxHeight * f, Q_RADIUS);
+            const w = degAtRadius(qMesh.userData.boxWidth * f, Q_RADIUS);
+            placements.push({ mesh: qMesh, yawOff: 0, pitchOff: topCursor - h / 2 });
+            halfWidth = Math.max(halfWidth, w / 2);
+            topCursor -= h + gap;
+          }
+          rows.forEach(row => {
+            const widths = row.map(m => degAtRadius(m.userData.boxWidth * f, Q_RADIUS));
+            const rowHeight = Math.max.apply(null, row.map(m => degAtRadius(m.userData.boxHeight * f, Q_RADIUS)));
+            const totalWidth = widths.reduce((a, b) => a + b, 0) + gap * (row.length - 1);
+            let cursorYaw = -totalWidth / 2;
+            row.forEach((m, i) => {
+              placements.push({ mesh: m, yawOff: cursorYaw + widths[i] / 2, pitchOff: topCursor - rowHeight / 2 });
+              cursorYaw += widths[i] + gap;
+            });
+            halfWidth = Math.max(halfWidth, totalWidth / 2);
+            topCursor -= rowHeight + gap;
+          });
+          return { placements: placements, extent: -(topCursor + gap), halfWidth: halfWidth };
+        }
+
+        // Blokken må aldrig ramme Afslut eller klemme Play-knappens bånd
+        // (ANSWER_BLOCK_FLOOR_DEG). Knapperne flytter sig ikke, så blokken viger.
+        // Det gælder kun foran eleven (yaw 0); et spørgsmål til siden, bagved
+        // eller over kan ikke ramme dem og placeres præcis som angivet.
+        const rel1 = layoutBlock(1);
+        const yawFromChrome = Math.abs(((yaw0 + 180) % 360 + 360) % 360 - 180);
+        const chromeHalfYaw = (showExitButton() && hasReplayButton(node)) ? CHROME_WITH_REPLAY_HALF_YAW_DEG : CHROME_HALF_YAW_DEG;
+        const canHitChrome = (yawFromChrome - rel1.halfWidth) < chromeHalfYaw;
+
+        let blockTopDeg = anchor.pitchDeg;
+        let fit = 1;
+        if (canHitChrome) {
+          // Løft hellere en blok, der ikke passer, end at krympe den, så teksten
+          // forbliver læselig. Først når den er løftet til MAX_BLOCK_TOP_DEG,
+          // krymper den.
+          blockTopDeg = Math.min(MAX_BLOCK_TOP_DEG,
+            Math.max(anchor.pitchDeg, ANSWER_BLOCK_FLOOR_DEG + rel1.extent));
+          const budgetDeg = Math.max(0, blockTopDeg - ANSWER_BLOCK_FLOOR_DEG);
+          if (rel1.extent > budgetDeg) fit = Math.max(MIN_BLOCK_FIT, budgetDeg / rel1.extent);
+        }
+        const laid = fit === 1 ? rel1 : layoutBlock(fit);
+
+        // Blokken blev løftet for at gå fri af Afslut. I Builders preview sendes
+        // den reelle højde tilbage, så Lodret passer med det, forfatteren ser.
+        // Ellers ville den falde ned igen, når den flyttes til siden.
+        if (previewEmbedMode && blockTopDeg > anchor.pitchDeg + 0.01) {
+          try { parent.postMessage({ type: 'lxrPreviewLift', nodeId: node.id, pitchDeg: blockTopDeg }, '*'); } catch (_) {}
+        }
+
+        laid.placements.forEach(p => {
+          if (fit !== 1) p.mesh.scale.setScalar(fit);
+          qGroup.add(p.mesh);
+          positionMeshFromAngles(p.mesh, yaw0 + p.yawOff, blockTopDeg + p.pitchOff, Q_RADIUS);
+        });
+        (confirmMesh ? choiceMeshes.concat([confirmMesh]) : choiceMeshes).forEach(m => {
+          attachProgressRing(m);
+          // Kigge-ringen er 0,84 bred; kun svar mindre end det (Size under 1) får
+          // en mindre ring.
+          const ringFit = m.userData.boxHeight * 0.95 / 0.84;
+          if (ringFit < 1) m.getObjectByName('progressRing').scale.setScalar(ringFit);
+          activeChoices.push(m);
+        });
+
+        // Fortæl Play-knappen, hvor langt ned svarene når, så den kan finde plads
+        // under dem (se showPlayGate()). En blok der ikke kan nå knapperne,
+        // påvirker den ikke.
+        answerBlockBottomDeg = canHitChrome ? (blockTopDeg - laid.extent) : null;
+
+        qGroup.userData = { startTime: node.questionTime || 0, endTime: Infinity, isOverlay: true };
+        qGroup.visible = false;
+        overlaysGroup.add(qGroup);
+      }
+
+      // Afslut: et blik-mål lavt i synsfeltet, langt fra svarene, med længere
+      // kigge-tid, så den ikke vælges ved et uheld. Findes på alle scener undtagen
+      // slutscener. Står i faste grader (EXIT_PITCH_DEG), ikke i forfatterens X/Y.
+      // Forfatteren kan fjerne Afslut for hele simulationen (hideExit); så slutter
+      // eleven ved at gennemføre, ved lærerens stop, eller ved inaktivitet.
+      if (node.type !== 'end' && showExitButton()) {
+        const exitMesh = createTextPlane('✕ Afslut', {
+          width: 360, height: 120, fontSize: 40,
+          backgroundColor: 'rgba(17,24,39,0.75)', textColor: '#fca5a5', fontWeight: '600', scale: 0.7
+        });
+        positionMeshFromAngles(exitMesh, 0, EXIT_PITCH_DEG, EXIT_RADIUS);
+        exitMesh.userData = { isChoice: true, choiceData: { __exit: true, label: 'exit' }, dwell: Math.max(2.5, currentDwell * 1.5) };
+        attachProgressRing(exitMesh);
+        overlaysGroup.add(exitMesh);
+        activeChoices.push(exitMesh);
+      }
+
+      // "↻ Se igen": starter scenens video forfra. Sættes pr. scene med det
+      // sekund, den vises. Samme udseende og kigge-tid som Afslut.
+      if (hasReplayButton(node)) {
+        const replayMesh = createTextPlane('↻ Se igen', {
+          width: 360, height: 120, fontSize: 40,
+          backgroundColor: 'rgba(17,24,39,0.75)', textColor: '#93c5fd', fontWeight: '600', scale: 0.7
+        });
+        positionMeshFromAngles(replayMesh, showExitButton() ? REPLAY_YAW_DEG : 0, EXIT_PITCH_DEG, EXIT_RADIUS);
+        const at = Math.max(0, parseFloat(node.replayTime) || 0);
+        replayMesh.userData = { isChoice: true, choiceData: { __replay: true, label: 'replay' }, dwell: Math.max(2.0, currentDwell),
+                                isOverlay: true, startTime: at, endTime: Infinity };
+        replayMesh.visible = at === 0;
+        attachProgressRing(replayMesh);
+        overlaysGroup.add(replayMesh);
+        activeChoices.push(replayMesh);
+      }
+    }
+
+    function showExitButton() { return !(sessionData && sessionData.hideExit === true); }
+    function hasReplayButton(node) { return !!(node && node.type !== 'end' && node.replayEnabled); }
+    function isMultiNode(node) { return !!(node && node.questionMode === 'multi' && node.choices && node.choices.length); }
+    // Players egen knap, aldrig et svar: holder ikke auto-advance tilbage.
+    function isChromeChoice(c) {
+      const d = c.userData.choiceData;
+      return !!(d && (d.__exit || d.__replay));
+    }
+
+    // En ring på det svar, eleven kigger på, viser at valget er ved at ske, så
+    // man kan nå at kigge væk. Kun det ene mål får ny geometri pr. frame.
+    function attachProgressRing(mesh) {
+      const geo = new THREE.RingGeometry(0.28, 0.34, 40, 1, 0, 0.0001);
+      const mat = new THREE.MeshBasicMaterial({ color: 0xfbbf24, transparent: true, opacity: 0.95, side: THREE.DoubleSide });
+      const ring = new THREE.Mesh(geo, mat);
+      ring.name = 'progressRing';
+      ring.position.set(0, 0, 0.02);
+      ring.visible = false;
+      mesh.add(ring);
+    }
+
+    // Forfatterens X/Y i procent → yaw/pitch i grader, i projektets
+    // koordinatsystem (se COORD_*).
+    //   yaw   — 0 lige frem, positiv til elevens højre
+    //   pitch — 0 i horisonten, positiv op
+    function anglesFromXY(pctX, pctY) {
+      let x = parseFloat(pctX); if (!isFinite(x)) x = 50;
+      let y = parseFloat(pctY); if (!isFinite(y)) y = 50;
+      if (coordSpace() === COORD_SPHERE) {
+        // Ækvirektangulær: hele kuglen kan nås. Pitch holdes lige inden for polerne,
+        // fordi lookAt() ikke har nogen defineret roll ved ±90°; 88° ser ud som lige op.
+        return {
+          yawDeg: (x - 50) / 100 * 360,
+          pitchDeg: Math.max(-88, Math.min(88, (50 - y) / 100 * 180))
+        };
+      }
+      return { yawDeg: (x - 50) / 100 * 90, pitchDeg: (50 - y) / 100 * 50 };
+    }
+
+    // Placér en mesh på en kugle med given radius ved yaw/pitch og vend den mod midten.
+    function positionMeshFromAngles(mesh, yawDeg, pitchDeg, radius) {
+      const yaw = yawDeg * Math.PI / 180;
+      const pitch = pitchDeg * Math.PI / 180;
+      mesh.position.set(
+        radius * Math.sin(yaw) * Math.cos(pitch),
+        radius * Math.sin(pitch),
+        -radius * Math.cos(yaw) * Math.cos(pitch)
+      );
+      mesh.lookAt(0, 0, 0);
+    }
+
+    function positionMeshFromXY(mesh, pctX, pctY, radius) {
+      const a = anglesFromXY(pctX, pctY);
+      positionMeshFromAngles(mesh, a.yawDeg, a.pitchDeg, radius);
+    }
+
+    // En mesh' størrelse som vinkel ved en given radius; den enhed layoutet
+    // af spørgsmål og svar regner i.
+    function degAtRadius(worldSize, radius) {
+      return (worldSize / radius) * (180 / Math.PI);
+    }
+
+    // === Valg ===
+    // `isAuto` betyder, at render-loopet navigerede, fordi tidslinjen løb ud uden
+    // valg. Det logges som `auto_advance`, aldrig som `choice_made`, så CSV'en
+    // aldrig får et svar, ingen elev gav.
+    function selectChoice(choice, isAuto, mesh) {
+      // Play-knappen håndteres før låsen for sceneskift.
+      if (choice && choice.__retryPlay) {
+        clearPlayGate();
+        isTransitioning = false;
+        updateGazeProgress(0);
+        const p = videoElement.play();
+        if (p && p.catch) p.catch(() => showPlayGate());
+        return;
+      }
+
+      // Afslut i VR. selfExit=true: eleven valgte det selv, så "Session Done"-
+      // kortet springes over (se endSession).
+      if (choice && choice.__exit) {
+        isTransitioning = true;
+        endReason = 'exit';
+        endSession(true);
+        return;
+      }
+
+      if (choice && choice.__replay) { replayCurrentNode(); return; }
+      if (mesh && mesh.userData.multiToggle) { toggleMultiChoice(mesh); return; }
+      if (choice && choice.__confirm) { confirmMultiChoice(); return; }
+      if (choice && choice.__continue) { continueAfterMulti(); return; }
+
+      if (isTransitioning) return;
+      isTransitioning = true;
+
+      const nowSec = +((performance.now() - sessionStartTime) / 1000).toFixed(2);
+      if (isAuto) {
+        sessionLog.push({
+          action: 'auto_advance', node: currentNode.id, node_title: currentNode.title,
+          target: choice.target,
+          session_time_sec: nowSec, node_time_sec: +nodeTimer.toFixed(2)
+        });
+      } else {
+        sessionLog.push({
+          action: 'choice_made', node: currentNode.id, node_title: currentNode.title,
+          question: currentNode.question || '',
+          choice: choice.label, choice_index: (currentNode.choices || []).indexOf(choice), correct: choice.correct, target: choice.target,
+          session_time_sec: nowSec, node_time_sec: +nodeTimer.toFixed(2)
+        });
+        recordLiveAnswer(currentNode.id, choice.correct === true, [(currentNode.choices || []).indexOf(choice)]);
+      }
+      updateGazeProgress(0);
+      goToNode(choice.target || currentNode.defaultNext);
+    }
+
+    function goToNode(nextNodeId) {
+      if (nextNodeId) {
+        const nextNode = sessionData.nodes.find(n => n.id === nextNodeId);
+        if (nextNode) {
+          // Sæt currentNode i BEGGE grene. Ellers blev render-loopet ved med at
+          // køre den forrige scenes tidslinje og skrev dobbelte rækker.
+          currentNode = nextNode;
+          loadNode(nextNode);
+          if (nextNode.type === 'end') {
+            // Slutscenens varighed, ellers 3 s.
+            const secs = parseFloat(nextNode.duration);
+            scheduleEndSession((secs > 0 ? secs : 3) * 1000);
+          }
+        } else { endSession(); }
+      } else { endSession(); }
+    }
+
+    // Kun første svar pr. spørgsmål. Et gentaget spørgsmål logges fuldt, men
+    // statistikken bruger første forsøg. a = valgte svar som indeks i scenens
+    // choices, så Dashboardet kan vise, hvordan klassen fordelte sig.
+    function recordLiveAnswer(nodeId, ok, picks) {
+      if (liveAnswers.some(a => a.n === nodeId) || liveAnswers.length >= 200) return;
+      liveAnswers.push({ n: nodeId, c: ok ? 1 : 0, a: (picks || []).filter(i => i >= 0) });
+      sendHeartbeat();   // Dashboardets tal opdateres nu, ikke ved næste tick
+    }
+
+    // Et blik der lige har udløst noget, skal væk fra målet, før det kan udløse
+    // igen. Ellers fyrer en fuld ring igen i næste frame.
+    function lockGazeOn(mesh) {
+      preArmedChoice = mesh; gazeTimer = 0; lastIntersectedChoice = null;
+      updateGazeProgress(0);
+    }
+
+    function replayCurrentNode() {
+      if (isTransitioning || !currentNode || sessionEnding) return;
+      sessionLog.push({
+        action: 'replay', node: currentNode.id, node_title: currentNode.title,
+        session_time_sec: +((performance.now() - sessionStartTime) / 1000).toFixed(2), node_time_sec: +nodeTimer.toFixed(2)
+      });
+      updateGazeProgress(0);
+      loadNode(currentNode);
+    }
+
+    // === Flervalg ("Vælg alle rigtige") ===
+    let multiState = null;   // { meshes, confirm, done } for den viste scene
+    const MULTI_DISABLED_BG = 'rgba(75,85,99,0.92)';
+    const MULTI_READY_BG = 'rgba(21,128,61,0.95)';
+    const MULTI_PICKED_BORDER = '#fbbf24';
+    const FEEDBACK_RIGHT_BG = '#15803d';
+    const FEEDBACK_WRONG_BG = '#b91c1c';
+
+    // Hvor mange der skal krydses af før Bekræft; 0 = vilkårligt. Som standard
+    // får eleven IKKE at vide, hvor mange der er rigtige. Kun med multiShowCount
+    // står der "Vælg N svar", hvor N er antallet markeret rigtige.
+    function multiRequired(node) {
+      if (!node || node.multiShowCount !== true) return 0;
+      return (node.choices || []).filter(c => c.correct === true).length;
+    }
+    function multiConfirmLabel(node, k) {
+      const need = multiRequired(node);
+      if (need) return k === need ? { text: 'Bekræft svar ✓', ready: true } : { text: 'Vælg ' + need + ' svar (' + k + '/' + need + ')', ready: false };
+      return k > 0 ? { text: 'Bekræft svar ✓ (' + k + ' valgt)', ready: true } : { text: 'Vælg alle rigtige svar', ready: false };
+    }
+
+    function toggleMultiChoice(mesh) {
+      if (!multiState || multiState.done) return;
+      mesh.userData.selected = !mesh.userData.selected;
+      restyleChoice(mesh, mesh.userData.selected ? { borderColor: MULTI_PICKED_BORDER, borderWidth: 10 } : {});
+      setChoiceBadge(mesh, mesh.userData.selected ? '✓' : null, '#0969da');
+      const k = multiState.meshes.filter(m => m.userData.selected).length;
+      const lab = multiConfirmLabel(currentNode, k);
+      restyleChoice(multiState.confirm, { backgroundColor: lab.ready ? MULTI_READY_BG : MULTI_DISABLED_BG }, lab.text);
+      multiState.confirm.userData.disabled = !lab.ready;
+      lockGazeOn(mesh);
+    }
+
+    // Send det afkrydsede sæt og vis facit: rigtige svar bliver grønne, forkerte
+    // røde, og elevens egne valg får hvid ramme med ✓ eller ✗. Bekræft bliver Fortsæt.
+    function confirmMultiChoice() {
+      if (!multiState || multiState.done || multiState.confirm.userData.disabled || isTransitioning) return;
+      multiState.done = true;
+      const meshes = multiState.meshes;
+      const isRight = m => m.userData.choiceData.correct === true;
+      const picked = meshes.filter(m => m.userData.selected);
+      const hits = picked.filter(isRight).length;
+      const wrongPicks = picked.length - hits;
+      const total = meshes.filter(isRight).length;
+      const allRight = hits === total && wrongPicks === 0;
+      // Logges som et almindeligt choice_made (ét svar, kun rigtigt hvis hele
+      // sættet er), med detaljerne ved siden af.
+      sessionLog.push({
+        action: 'choice_made', multi: true, node: currentNode.id, node_title: currentNode.title,
+        question: currentNode.question || '',
+        choice: picked.map(m => m.userData.choiceData.label).join(' | '),
+        selected: picked.map(m => m.userData.choiceData.label),
+        selected_index: picked.map(m => meshes.indexOf(m)),
+        correct_choices: meshes.filter(isRight).map(m => m.userData.choiceData.label),
+        hits: hits, wrong_picks: wrongPicks, total_correct: total,
+        correct: allRight, target: currentNode.defaultNext || null,
+        session_time_sec: +((performance.now() - sessionStartTime) / 1000).toFixed(2), node_time_sec: +nodeTimer.toFixed(2)
+      });
+      recordLiveAnswer(currentNode.id, allRight, picked.map(m => meshes.indexOf(m)));
+      updateGazeProgress(0);
+      meshes.forEach(m => {
+        const ok = isRight(m);
+        m.userData.multiToggle = false;
+        m.userData.feedback = ok ? 'right' : 'wrong';
+        m.userData.originalColor = 0xffffff;
+        m.material.color.setHex(0xffffff);
+        restyleChoice(m, { backgroundColor: ok ? FEEDBACK_RIGHT_BG : FEEDBACK_WRONG_BG, textColor: 'white',
+                           borderColor: m.userData.selected ? '#ffffff' : null, borderWidth: m.userData.selected ? 10 : 0 });
+        setChoiceBadge(m, m.userData.selected ? (ok ? '✓' : '✗') : null, ok ? FEEDBACK_RIGHT_BG : FEEDBACK_WRONG_BG);
+      });
+      const conf = multiState.confirm;
+      activeChoices = activeChoices.filter(c => meshes.indexOf(c) === -1);
+      const summary = allRight ? '✓ Alle rigtige — Fortsæt →'
+        : hits + ' af ' + total + ' rigtige' + (wrongPicks ? ' · ' + wrongPicks + ' forkert' + (wrongPicks > 1 ? 'e' : '') : '') + ' — Fortsæt →';
+      restyleChoice(conf, { backgroundColor: 'rgba(9,105,218,0.95)' }, summary);
+      conf.userData.choiceData = { __continue: true, label: 'continue' };
+      conf.userData.disabled = false;
+      lockGazeOn(conf);
+    }
+
+    function continueAfterMulti() {
+      if (isTransitioning) return;
+      isTransitioning = true;
+      updateGazeProgress(0);
+      goToNode(currentNode.defaultNext);
+    }
+
+    // Tegn en tekstboks' tekstur igen (farver/ramme/tekst) uden at røre
+    // geometrien, så gitteret ikke flytter sig.
+    function restyleChoice(mesh, overrides, newText) {
+      const base = mesh.userData.textOpts;
+      if (!base) return;
+      const text = newText != null ? newText : mesh.userData.textLabel;
+      const tmp = createTextPlane(text, Object.assign({}, base, { borderColor: null, borderWidth: 0 }, overrides, { height: mesh.userData.logicHeight }));
+      if (mesh.material.map) mesh.material.map.dispose();
+      mesh.material.map = tmp.material.map;
+      mesh.material.needsUpdate = true;
+      mesh.userData.textLabel = text;
+      tmp.geometry.dispose(); tmp.material.dispose();
+    }
+
+    // Lille ✓ / ✗ i boksens øverste højre hjørne. Et barn-mesh, så blik-
+    // raycastet (ikke rekursivt) aldrig rammer det.
+    function setChoiceBadge(mesh, symbol, color) {
+      const old = mesh.getObjectByName('choiceBadge');
+      if (old) { mesh.remove(old); disposeNode(old); }
+      if (!symbol) return;
+      const b = createTextPlane(symbol, { width: 100, height: 100, fontSize: 72, backgroundColor: '#ffffff', textColor: color, fontWeight: '700' });
+      const size = 100 / 256;
+      const k = Math.min(1, mesh.userData.boxHeight * 0.55 / size);
+      b.name = 'choiceBadge';
+      b.scale.setScalar(k);
+      b.position.set(mesh.userData.boxWidth / 2 - size * k * 0.35, mesh.userData.boxHeight / 2 - size * k * 0.35, 0.03);
+      mesh.add(b);
+    }
+
+    // Planlæg afslutningen én gang, efter slutscenen har vist sit indhold.
+    // Et kald mens et andet venter, ignoreres.
+    function scheduleEndSession(delayMs) {
+      if (endTimer || sessionEnding) return;
+      endTimer = setTimeout(() => { endTimer = null; endSession(); }, delayMs);
+    }
+
+    // Afslutter både headset og flad preview. Må kun køre én gang, selvom
+    // render-loopet, slut-timeren og Afslut alle kan nå hertil.
+    // selfExit=true: eleven valgte selv at gå via Afslut, så "Session Done"-
+    // kortet ville være misvisende.
+    function endSession(selfExit) {
+      if (sessionEnding) return;
+      sessionEnding = true;
+      if (endTimer) { clearTimeout(endTimer); endTimer = null; }
+      if (xrSession) {
+        if (selfExit) { xrSession.end(); return; }
+        // Vis "Session Done" kort i headsettet før xrSession.end(), så eleven
+        // ikke bliver trukket ud af VR uden varsel.
+        showSessionCompleteMessage();
+        sessionCompleteTimer = setTimeout(() => {
+          sessionCompleteTimer = null;
+          if (xrSession) xrSession.end();
+        }, SESSION_COMPLETE_HOLD_MS);
+        return;
+      }
+      if (flatPreview) onSessionEnd();
+    }
+
+    // === Render-loop ===
+    function render() {
+      // Begræns dt. Uret nulstilles ved hvert gennemløb, men en pause midt i
+      // (headset taget af, systemmenu) giver hele pausen som ét dt. Med MAX_DT
+      // kan ingen frame springe indhold over.
+      const dt = Math.min(clock.getDelta(), MAX_DT);
+      let currentTime = 0;
+      trackMovement();
+      checkIdle();
+
+      if (currentNode) {
+        const nodeHasVideo = !!currentNode.video;
+
+        // Scenens tidslinje står på 0, til videoen har en rigtig første frame
+        // (readyState >= HAVE_CURRENT_DATA), ellers kører overlays over en sort
+        // kugle. En rummelig timeout erklærer et defekt klip fejlet.
+        if (nodeHasVideo && !videoReady && !videoFailed) {
+          if ((performance.now() - videoLoadStart) / 1000 > VIDEO_LOAD_TIMEOUT) {
+            markVideoFailed();  // hurtigere vej, når frames kommer; timeren er sikkerhedsnettet
+          } else {
+            // Buffer stadig: frys tidslinjen og vis indikatoren, men hold render-
+            // og blik-loopet i gang, så Play-knappen virker.
+            showLoading(true);
+            handleGazeInteractions(dt);
+            renderer.render(scene, camera);
+            return;
+          }
+        }
+        if (videoReady) showLoading(false);
+
+        // ---- SCENENS UR ----
+        // Går kun fremad: videoen styrer det, mens den reelt spiller, og vægur
+        // overtager, når den står stille. En dekoder der hænger eller
+        // nulstilles, kan hverken fryse eller spole tidslinjen tilbage.
+        const hasVideo = nodeHasVideo && videoElement.readyState > 0;
+        let advanced = 0;
+        if (hasVideo && !videoElement.ended && !videoElement.paused) {
+          const vt = videoElement.currentTime;
+          if (vt > lastVideoTime + 0.001) { advanced = vt - lastVideoTime; videoStalledFor = 0; }
+          else { videoStalledFor += dt; }
+          lastVideoTime = vt;
+        } else {
+          videoStalledFor += dt;   // ingen video, blokeret, hænger eller forbi slutningen
+        }
+
+        if (advanced > 0) nodeTimer += advanced;
+        else if (videoStalledFor > VIDEO_STALL_GRACE) nodeTimer += dt;
+
+        // Klippet kører, så Play-knappen har gjort sit.
+        if (advanced > 0) clearPlayGate();
+
+        currentTime = nodeTimer;
+
+        // Vis/skjul overlays efter tidslinjen
+        overlaysGroup.children.forEach(child => {
+          if (child.userData.isOverlay && child.userData.startTime !== undefined) {
+            child.visible = currentTime >= child.userData.startTime && currentTime <= child.userData.endTime;
+          }
+        });
+
+        // Auto-advance / afslut. Afslut-knappen tæller ikke som et ventende svar,
+        // ellers kunne ingen scene gå videre af sig selv.
+        const choicesPending = activeChoices.some(c => !isChromeChoice(c));
+
+        // Afslutning: en videoscene slutter ved 'ended' (aldrig på en gættet
+        // varighed, hvis den er ukendt); andre scener når deres varighed er gået.
+        let ended;
+        if (nodeHasVideo && !videoFailed) {
+          const vdur = videoElement.duration;
+          ended = videoElement.ended || (isFinite(vdur) && vdur > 0 && currentTime >= vdur);
+        } else {
+          ended = currentTime >= (parseFloat(currentNode.duration) || 10);
+        }
+
+        if (!choicesPending && ended) {
+          if (currentNode.defaultNext) {
+            selectChoice({ target: currentNode.defaultNext }, true); // auto_advance, beskytter sig selv
+          } else if (!isTransitioning) {
+            isTransitioning = true; // slutscene uden link → afslut i stedet for at fryse
+            endSession();
+          }
+        }
+      }
+
+      handleGazeInteractions(dt);
+      renderer.render(scene, camera);
+    }
+
+    function getVisibleChoices() {
+      return activeChoices.filter(c => c.visible && !c.userData.disabled && (c.parent ? c.parent.visible : true));
+    }
+
+    function handleGazeInteractions(dt) {
+      const visibleChoices = getVisibleChoices();
+
+      // Start forsinkelsen igen, når et svar dukker op, der ikke var synligt i
+      // sidste frame. Pr. mesh, så svarene ved questionTime starter den, selvom
+      // Afslut allerede var vist.
+      let appeared = false;
+      visibleChoices.forEach(c => { if (!c.userData._wasVisible) appeared = true; });
+      activeChoices.forEach(c => { c.userData._wasVisible = false; });
+      visibleChoices.forEach(c => { c.userData._wasVisible = true; });
+
+      if (visibleChoices.length === 0) {
+        armed = false; armTimer = 0; preArmedChoice = null;
+        gazeTimer = 0; lastIntersectedChoice = null;
+        updateGazeProgress(0);
+        return;
+      }
+      if (appeared) { armed = false; armTimer = 0; preArmedChoice = null; gazeTimer = 0; }
+
+      // Blik-stråle lige ud fra kameraets retning i verden (virker i XR).
+      // recursive=false, så ringene (børn af svarene) aldrig rammes.
+      camera.getWorldPosition(_gazeOrigin);
+      camera.getWorldQuaternion(_gazeQuat);
+      _gazeDir.set(0, 0, -1).applyQuaternion(_gazeQuat).normalize();
+      raycaster.set(_gazeOrigin, _gazeDir);
+
+      const intersects = raycaster.intersectObjects(visibleChoices, false);
+      const intersectedChoice = intersects.length > 0 ? intersects[0].object : null;
+
+      // Forsinkelsen er ikke gået: blikket må hvile her, men ringen starter først bagefter.
+      if (!armed) {
+        armTimer += dt;
+        lastIntersectedChoice = intersectedChoice;
+        gazeTimer = 0;
+        if (armTimer >= GAZE_ARM_DELAY) {
+          armed = true;
+          // Et svar der allerede er under sigtet, når forsinkelsen udløber, er låst:
+          // blikket skal væk og tilbage, før det kan vælges.
+          preArmedChoice = intersectedChoice || null;
+        }
+        updateGazeProgress(0, intersectedChoice);
+        return;
+      }
+
+      // Lås op, så snart blikket forlader det låste svar.
+      if (preArmedChoice && intersectedChoice !== preArmedChoice) preArmedChoice = null;
+
+      if (intersectedChoice && intersectedChoice !== preArmedChoice) {
+        const threshold = intersectedChoice.userData.dwell || currentDwell;
+        if (lastIntersectedChoice === intersectedChoice) {
+          gazeTimer = Math.min(threshold, gazeTimer + dt);
+          updateGazeProgress(gazeTimer / threshold, intersectedChoice);
+          if (gazeTimer >= threshold) selectChoice(intersectedChoice.userData.choiceData, false, intersectedChoice);
+        } else {
+          gazeTimer = 0;
+          lastIntersectedChoice = intersectedChoice;
+          updateGazeProgress(0, intersectedChoice);
+        }
+      } else {
+        // Intet svar, eller stadig på det låste.
+        gazeTimer = 0;
+        lastIntersectedChoice = intersectedChoice;
+        updateGazeProgress(0, null);
+      }
+    }
+
+    function updateGazeProgress(progress, targetMesh = null) {
+      const p = Math.max(0, Math.min(1, progress));
+      const progressIndicator = reticle.getObjectByName('gazeProgress');
+      if (progressIndicator) {
+        const s = Math.max(0.001, p);
+        progressIndicator.scale.set(s, s, s);
+      }
+      activeChoices.forEach(child => {
+        if (child.material && child.material.color) {
+          if (child.userData.originalColor === undefined) child.userData.originalColor = child.material.color.getHex();
+          child.material.color.setHex(child === targetMesh ? 0x3b82f6 : child.userData.originalColor);
+        }
+        // Ring på det valgte svar, så eleven kan se, at et valg er på vej.
+        const ring = child.getObjectByName ? child.getObjectByName('progressRing') : null;
+        if (ring) {
+          if (child === targetMesh && p > 0.001) {
+            ring.visible = true;
+            if (ring.geometry) ring.geometry.dispose();
+            ring.geometry = new THREE.RingGeometry(0.34, 0.42, 44, 1, Math.PI / 2, -p * Math.PI * 2);
+          } else {
+            ring.visible = false;
+          }
+        }
+      });
+    }
+
+    // === Medier ===
+    function clearOverlays() {
+      while (overlaysGroup.children.length > 0) {
+        const child = overlaysGroup.children[0];
+        overlaysGroup.remove(child);
+        if (child.type === 'Group') child.children.forEach(c => disposeNode(c));
+        else disposeNode(child);
+      }
+      activeChoices = [];
+      gazeTimer = 0;
+      lastIntersectedChoice = null;
+    }
+
+    function disposeNode(child) {
+      // Svar har en progressRing som barn; frigiv hele træet, så lange gennemløb
+      // ikke lækker geometri/materialer.
+      if (child.children) child.children.slice().forEach(disposeNode);
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) {
+        if (child.material.map) child.material.map.dispose();
+        child.material.dispose();
+      }
+    }
+
+    function createImagePlane(url, options = {}) {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.src = url;
+        img.onload = () => {
+          const aspect = img.width / img.height;
+          const baseWidth = 4;
+          const scale = options.scale || 1;
+          const geo = new THREE.PlaneGeometry(baseWidth * aspect * scale, baseWidth * scale);
+          const tex = new THREE.Texture(img);
+          tex.colorSpace = THREE.SRGBColorSpace;
+          tex.needsUpdate = true;
+          const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide });
+          resolve(new THREE.Mesh(geo, mat));
+        };
+        img.onerror = () => resolve(null);
+      });
+    }
+
+    function createTextPlane(text, options = {}) {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const logicWidth = options.width || 512;
+      const minHeight = options.height || 128;
+      const fontSize = options.fontSize || 32;
+      const fontWeight = options.fontWeight || 'normal';
+      const pixelRatio = 3;
+      const padding = 20;
+
+      // Ombryd mod den angivne bredde FØR canvas ændrer størrelse, så antallet af
+      // linjer er kendt, før baggrundens højde vælges. measureText giver logiske
+      // enheder uanset ctx.scale, så måling før og tegning efter passer.
+      ctx.font = `${fontWeight} ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+      // Hvert linjeskift starter et nyt afsnit (et tomt giver en tom linje); inden
+      // for et afsnit ombrydes ordene til boksens bredde.
+      let lines = [];
+      String(text).replace(/\r\n?/g, '\n').split('\n').forEach(para => {
+        const words = para.split(' ');
+        let line = '';
+        for (let n = 0; n < words.length; n++) {
+          let testLine = line + words[n] + ' ';
+          if (ctx.measureText(testLine).width > logicWidth - padding * 2 && n > 0) { lines.push(line); line = words[n] + ' '; }
+          else line = testLine;
+        }
+        lines.push(line);
+      });
+      const lineHeight = fontSize * 1.3;
+      // Aldrig lavere end den angivne højde (et kort svar får stadig en rimelig
+      // knap), men altid høj nok til teksten.
+      const logicHeight = Math.max(minHeight, lines.length * lineHeight + padding * 2.6);
+
+      // Ny canvas-størrelse nulstiller hele 2D-konteksten (font, transform osv.),
+      // så det skal ske efter målingen, og font/justering sættes igen herunder.
+      canvas.width = logicWidth * pixelRatio;
+      canvas.height = logicHeight * pixelRatio;
+      ctx.scale(pixelRatio, pixelRatio);
+
+      const textColor = options.textColor || 'white';
+      const backgroundColor = options.backgroundColor || 'rgba(0,0,0,0.5)';
+      const scale = options.scale || 1;
+
+      ctx.fillStyle = backgroundColor;
+      ctx.beginPath();
+      const radius = 16;
+      ctx.moveTo(radius, 0);
+      ctx.lineTo(logicWidth - radius, 0);
+      ctx.quadraticCurveTo(logicWidth, 0, logicWidth, radius);
+      ctx.lineTo(logicWidth, logicHeight - radius);
+      ctx.quadraticCurveTo(logicWidth, logicHeight, logicWidth - radius, logicHeight);
+      ctx.lineTo(radius, logicHeight);
+      ctx.quadraticCurveTo(0, logicHeight, 0, logicHeight - radius);
+      ctx.lineTo(0, radius);
+      ctx.quadraticCurveTo(0, 0, radius, 0);
+      ctx.closePath();
+      ctx.fill();
+      // Valgfri ramme (flervalg: afkrydset svar og elevens valg i facit). Tegnes
+      // på boksens kant, så halvdelen klippes af canvas; borderWidth er det synlige.
+      if (options.borderColor && options.borderWidth > 0) {
+        ctx.strokeStyle = options.borderColor;
+        ctx.lineWidth = options.borderWidth * 2;
+        ctx.stroke();
+      }
+
+      // Valgfri vandret justering; standard er centreret.
+      const align = (options.align === 'left' || options.align === 'right') ? options.align : 'center';
+      const anchorX = align === 'left' ? padding : (align === 'right' ? logicWidth - padding : logicWidth / 2);
+      ctx.fillStyle = textColor;
+      ctx.font = `${fontWeight} ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+      ctx.textAlign = align;
+      ctx.textBaseline = 'middle';
+
+      const startY = (logicHeight - (lines.length - 1) * lineHeight) / 2;
+      for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i].trim(), anchorX, startY + (i * lineHeight));
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, side: THREE.DoubleSide });
+      const geometry = new THREE.PlaneGeometry((logicWidth / 256) * scale, (logicHeight / 256) * scale);
+      const mesh = new THREE.Mesh(geometry, material);
+      // Eksponeret, så kaldere der stabler bokse, kan bruge den reelle højde.
+      mesh.userData.boxWidth = (logicWidth / 256) * scale;
+      mesh.userData.boxHeight = (logicHeight / 256) * scale;
+      // Gemmes, så restyleChoice() kan tegne samme boks med nye farver.
+      mesh.userData.textOpts = options;
+      mesh.userData.textLabel = text;
+      mesh.userData.logicHeight = logicHeight;
+      return mesh;
+    }
+
+    // === Gemte resultater (genskabelse) ===
+    function readSavedResults() {
+      try { return JSON.parse(localStorage.getItem('lxr_results') || '[]'); }
+      catch (e) { return []; }
+    }
+
+    function renderSavedResults() {
+      const host = document.getElementById('saved-results');
+      if (!host) return;
+      const saved = readSavedResults();
+      if (!saved.length) { host.innerHTML = ''; return; }
+      host.innerHTML =
+        '<div class="saved-title">Saved results on this headset (' + saved.length + ')</div>' +
+        '<button id="download-saved" class="link-btn">Download all again</button> ' +
+        '<button id="clear-saved" class="link-btn danger">Clear</button>';
+      document.getElementById('download-saved').addEventListener('click', downloadSavedResults);
+      document.getElementById('clear-saved').addEventListener('click', () => {
+        if (!confirm('Delete the results stored on this headset?')) return;
+        try { localStorage.removeItem('lxr_results'); } catch (e) {}
+        renderSavedResults();
+        updateStatus('Saved results cleared');
+      });
+    }
+
+    function downloadSavedResults() {
+      const saved = readSavedResults();
+      saved.forEach((entry, i) => {
+        setTimeout(() => {
+          try {
+            const blob = new Blob([JSON.stringify(entry.results, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = entry.fileName;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 4000);
+          } catch (e) {}
+        }, i * 350); // forskudt; browsere dropper mange samtidige downloads
+      });
+      updateStatus('Re-downloading ' + saved.length + ' result file(s)');
+    }
+
+    function updateStatus(message, isError = false) {
+      statusElement.textContent = message;
+      statusElement.style.display = 'block';
+      statusElement.style.background = isError ? 'rgba(220, 38, 38, 0.95)' : 'rgba(17, 24, 39, 0.9)';
+      setTimeout(() => { statusElement.style.display = 'none'; }, isError ? 5000 : 3000);
+    }
+
+    init();
+    // Svarer relay.py/cloud-relayet, sker det næsten med det samme. Ellers
+    // forbliver relayAvailable false, og alle relay-kald ovenfor gør ingenting.
+    checkRelay();
+  </script>
+</body>
+</html>
